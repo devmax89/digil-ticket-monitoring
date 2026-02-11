@@ -1,6 +1,7 @@
 """
 DIGIL Monitoring - Alert Generator
-8 regole di detection. Sotto corona: no alert su sensori di tiro.
+9 regole di detection (aggiunto NO_DATA).
+Fix: KO_NO_TICKET verifica ticket_id non vuoto + stato attivo.
 """
 import json
 from datetime import date
@@ -12,7 +13,9 @@ ACTIVE_TICKET_STATI = {"Aperto", "Interno"}
 
 
 def _has_active_ticket(device) -> bool:
-    """Un ticket è attivo se è Aperto o Interno"""
+    """Un ticket è attivo se ticket_id non è vuoto E ticket_stato è Aperto o Interno."""
+    if not device.ticket_id:
+        return False
     return device.ticket_stato in ACTIVE_TICKET_STATI
 
 
@@ -39,6 +42,7 @@ class AlertGenerator:
                 self._rule_connectivity_lost(session, device)
                 self._rule_door_alarm(session, device)
                 self._rule_battery_alarm(session, device)
+                self._rule_no_data(session, device, avail)
             session.commit()
             return self.count
         finally:
@@ -48,7 +52,7 @@ class AlertGenerator:
         records = (session.query(AvailabilityDaily)
                    .filter(AvailabilityDaily.device_id == device_id)
                    .order_by(AvailabilityDaily.check_date.asc()).all())
-        return [{"date": r.check_date, "norm": r.norm_status} for r in records[-days:]]
+        return [{"date": r.check_date, "norm": r.norm_status, "raw": r.raw_status} for r in records[-days:]]
 
     def _add(self, session, device, event_type, severity, description, context=None):
         session.add(AnomalyEvent(
@@ -82,25 +86,37 @@ class AlertGenerator:
         self._add(s, d, "INTERMITTENT", "MEDIUM", f"{changes} cambi stato in {len(r7)} giorni")
 
     def _rule_ko_no_ticket(self, s, d, av):
+        """FIX: verifica che ticket_id non sia vuoto E ticket_stato sia attivo.
+        Prima il bug: device con ticket_id valorizzato ma stato Chiuso/Scartato
+        venivano segnalati come 'senza ticket'."""
         if not av or av[-1]["norm"] != "KO": return
         ko_days = 0
         for i in range(len(av)-1, -1, -1):
             if av[i]["norm"] == "KO": ko_days += 1
             else: break
-        if ko_days < 3 or _has_active_ticket(d): return
+        if ko_days < 3: return
+
+        # FIX: verifica ticket attivo (ticket_id non nullo + stato Aperto/Interno)
+        if _has_active_ticket(d):
+            return  # Ha un ticket attivo → nessun alert
+
         sev = "CRITICAL" if ko_days >= 7 else "HIGH"
+
+        # Nota: se ha un ticket ma non attivo (Chiuso, Scartato, etc.) lo segnalo
         ticket_note = ""
         if d.ticket_id and d.ticket_stato:
-            ticket_note = f" (ticket {d.ticket_id} {d.ticket_stato})"
-        # Patch: sotto corona con MongoDB OK → availability KO è falso positivo
-        # (il device trasmette dati quindi funziona, il KO è dovuto ai sensori di tiro assenti)
+            ticket_note = f" (ticket {d.ticket_id} stato: {d.ticket_stato})"
+
+        # Sotto corona con MongoDB OK → falso positivo
         if d.is_sotto_corona:
             mongo_ok = d.check_mongo in (None, "OK", "-", "")
             if mongo_ok:
                 self._add(s, d, "KO_NO_TICKET", "LOW",
-                          f"Sotto corona con Mongo OK — KO availability da sensori tiro assenti ({ko_days}gg){ticket_note}")
+                          f"Sotto corona Mongo OK — KO da sensori tiro assenti ({ko_days}gg){ticket_note}")
                 return
-        self._add(s, d, "KO_NO_TICKET", sev, f"Device KO da {ko_days} giorni consecutivi SENZA ticket aperto{ticket_note}")
+
+        self._add(s, d, "KO_NO_TICKET", sev,
+                  f"Device KO da {ko_days} giorni consecutivi SENZA ticket attivo{ticket_note}")
 
     def _rule_open_ticket_ok(self, s, d, av):
         if d.ticket_stato != "Aperto" or not av or av[-1]["norm"] != "OK": return
@@ -114,7 +130,7 @@ class AlertGenerator:
     def _rule_connectivity_lost(self, s, d):
         if d.check_lte != "KO" or d.check_ssh != "KO" or _has_active_ticket(d): return
         self._add(s, d, "CONNECTIVITY_LOST", "HIGH",
-                  f"Disconnesso (LTE=KO, SSH=KO, Mongo={d.check_mongo or '?'}) — Nessun ticket")
+                  f"Disconnesso (LTE=KO, SSH=KO, Mongo={d.check_mongo or '?'}) — Nessun ticket attivo")
 
     def _rule_door_alarm(self, s, d):
         if d.porta_aperta != "KO": return
@@ -128,6 +144,22 @@ class AlertGenerator:
         if d.batteria != "KO": return
         sev = "MEDIUM" if _has_active_ticket(d) else "HIGH"
         self._add(s, d, "BATTERY_ALARM", sev, "Batteria KO — Rischio disconnessione")
+
+    def _rule_no_data(self, s, d, av):
+        """NUOVO: Cluster NO_DATA — device con status NO DATA / NOT AVAILABLE per 5+ giorni."""
+        if len(av) < 5: return
+        no_data_days = 0
+        for i in range(len(av)-1, -1, -1):
+            raw = (av[i].get("raw", "") or "").upper()
+            if raw in ("NO DATA", "NOT AVAILABLE", "CODE_3", "CODE_4"):
+                no_data_days += 1
+            else:
+                break
+        if no_data_days < 5: return
+        if _has_active_ticket(d): return
+        sev = "HIGH" if no_data_days >= 10 else "MEDIUM"
+        self._add(s, d, "NO_DATA", sev,
+                  f"NO DATA da {no_data_days} giorni consecutivi — verificare trasmissione dati")
 
 
 def run_detection(target_date=None) -> int:

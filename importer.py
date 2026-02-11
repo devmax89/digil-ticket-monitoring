@@ -1,7 +1,6 @@
 """
 DIGIL Monitoring - Excel Importer
-Solo i dispositivi dallo sheet Stato fanno fede.
-I device extra in Av Status vengono ignorati.
+Aggiunto: storico ticket (TicketHistory) aggiornato ad ogni import.
 """
 import pandas as pd
 import numpy as np
@@ -9,7 +8,7 @@ import json, re
 from datetime import datetime, date
 from typing import Dict, Tuple, Optional
 from pathlib import Path
-from database import get_session, init_db, Device, AvailabilityDaily, AnomalyEvent, ImportLog
+from database import get_session, init_db, Device, AvailabilityDaily, AnomalyEvent, ImportLog, TicketHistory
 
 AV_STATUS_NUMERIC = {1: "COMPLETE", 2: "AVAILABLE", 3: "NOT AVAILABLE", 4: "NO DATA"}
 
@@ -68,7 +67,6 @@ def safe_date(val) -> Optional[date]:
 
 
 def is_sotto_corona(tipo_install: Optional[str]) -> bool:
-    """Determina se l'installazione è sotto corona (senza sensori di tiro)"""
     if not tipo_install: return False
     return tipo_install.strip().lower() in SOTTO_CORONA_TYPES
 
@@ -76,33 +74,38 @@ def is_sotto_corona(tipo_install: Optional[str]) -> bool:
 class ExcelImporter:
     def __init__(self, file_path: str):
         self.file_path = Path(file_path)
-        self.stats = {"devices_imported": 0, "availability_records": 0, "new_dates": [], "errors": []}
+        self.stats = {"devices_imported": 0, "availability_records": 0,
+                      "tickets_new": 0, "tickets_updated": 0, "new_dates": [], "errors": []}
 
     def run(self) -> Dict:
         init_db()
         session = get_session()
         try:
-            print("[1/4] Lettura sheet 'Stato'...")
+            print("[1/5] Lettura sheet 'Stato'...")
             df_stato = pd.read_excel(self.file_path, sheet_name='Stato', engine='openpyxl', header=1)
             print(f"       {len(df_stato)} righe")
 
-            print("[2/4] Lettura sheet 'Av Status'...")
+            print("[2/5] Lettura sheet 'Av Status'...")
             df_av = pd.read_excel(self.file_path, sheet_name='Av Status', engine='openpyxl')
             print(f"       {len(df_av)} righe")
 
-            print("[3/4] Import dispositivi e availability...")
+            print("[3/5] Import dispositivi e availability...")
             self._import_devices(session, df_stato)
             self._import_availability_stato(session, df_stato)
             self._import_availability_av_status(session, df_av)
 
-            print("[4/4] Calcolo trend e stati...")
+            print("[4/5] Aggiornamento storico ticket...")
+            self._update_ticket_history(session)
+
+            print("[5/5] Calcolo trend e stati...")
             self._compute_derived_states(session)
 
-            log = ImportLog(filename=self.file_path.name, devices_total=self.stats["devices_imported"],
-                          status="OK")
+            log = ImportLog(filename=self.file_path.name, devices_total=self.stats["devices_imported"], status="OK")
             session.add(log)
             session.commit()
-            print(f"\nImport: {self.stats['devices_imported']} dispositivi, {self.stats['availability_records']} record avail")
+            print(f"\nImport completato: {self.stats['devices_imported']} dispositivi, "
+                  f"{self.stats['availability_records']} record avail, "
+                  f"{self.stats['tickets_new']} nuovi ticket, {self.stats['tickets_updated']} aggiornati")
             return self.stats
         except Exception as e:
             session.rollback()
@@ -111,7 +114,6 @@ class ExcelImporter:
             session.close()
 
     def _import_devices(self, session, df_stato):
-        """Importa SOLO i dispositivi dallo sheet Stato (fonte ufficiale)"""
         for _, row in df_stato.iterrows():
             device_id = safe_str(row.get("DeviceID"))
             if not device_id: continue
@@ -160,12 +162,62 @@ class ExcelImporter:
             device.ticket_stato = safe_str(row.get("Stato Ticket"))
             device.ticket_data_apertura = safe_date(row.get("Data apertura ticket"))
             device.ticket_data_risoluzione = safe_date(row.get("Data risoluzione"))
-            # Check last AVAILABILITY column
             for col in df_stato.columns:
                 if 'Unnamed: 68' in str(col) or col == df_stato.columns[-1]:
                     device.misure_mancanti = safe_str(row.get(col))
                     break
             self.stats["devices_imported"] += 1
+        session.flush()
+
+    def _update_ticket_history(self, session):
+        """Aggiorna storico ticket per ogni device che ha un ticket_id.
+        Se il ticket esiste già in history → aggiorna last_seen e stato.
+        Se è un ticket nuovo → crea record storico."""
+        now = datetime.utcnow()
+        for device in session.query(Device).filter(Device.ticket_id.isnot(None)).all():
+            if not device.ticket_id:
+                continue
+
+            existing = (session.query(TicketHistory)
+                        .filter(TicketHistory.device_id == device.device_id,
+                                TicketHistory.ticket_id == device.ticket_id)
+                        .first())
+
+            if existing:
+                existing.last_seen = now
+                existing.ticket_stato = device.ticket_stato
+                existing.ticket_data_risoluzione = device.ticket_data_risoluzione
+                if device.tipo_malfunzionamento: existing.tipo_malfunzionamento = device.tipo_malfunzionamento
+                if device.cluster_analisi: existing.cluster_analisi = device.cluster_analisi
+                if device.analisi_malfunzionamento: existing.analisi_malfunzionamento = device.analisi_malfunzionamento
+                if device.tipologia_intervento: existing.tipologia_intervento = device.tipologia_intervento
+                if device.strategia_risolutiva: existing.strategia_risolutiva = device.strategia_risolutiva
+                if device.risoluzione_attuata: existing.risoluzione_attuata = device.risoluzione_attuata
+                if device.cause_anomalie: existing.cause_anomalie = device.cause_anomalie
+                if device.note: existing.note = device.note
+                if device.cluster_jira: existing.cluster_jira = device.cluster_jira
+                if device.tipo_malf_jira: existing.tipo_malf_jira = device.tipo_malf_jira
+                self.stats["tickets_updated"] += 1
+            else:
+                session.add(TicketHistory(
+                    device_id=device.device_id,
+                    ticket_id=device.ticket_id,
+                    ticket_stato=device.ticket_stato,
+                    ticket_data_apertura=device.ticket_data_apertura,
+                    ticket_data_risoluzione=device.ticket_data_risoluzione,
+                    tipo_malfunzionamento=device.tipo_malfunzionamento,
+                    cluster_analisi=device.cluster_analisi,
+                    analisi_malfunzionamento=device.analisi_malfunzionamento,
+                    tipologia_intervento=device.tipologia_intervento,
+                    strategia_risolutiva=device.strategia_risolutiva,
+                    risoluzione_attuata=device.risoluzione_attuata,
+                    cause_anomalie=device.cause_anomalie,
+                    note=device.note,
+                    cluster_jira=device.cluster_jira,
+                    tipo_malf_jira=device.tipo_malf_jira,
+                    first_seen=now, last_seen=now,
+                ))
+                self.stats["tickets_new"] += 1
         session.flush()
 
     def _import_availability_stato(self, session, df_stato):
@@ -189,7 +241,6 @@ class ExcelImporter:
         session.flush()
 
     def _import_availability_av_status(self, session, df_av):
-        """Importa solo per device GIA' nel DB (da Stato)"""
         known_ids = {d.device_id for d in session.query(Device.device_id).all()}
         date_cols = [c for c in df_av.columns if isinstance(c, datetime)]
         skipped = 0

@@ -24,15 +24,83 @@ Al primo avvio, clicca **Importa Excel** e seleziona il file `Monitoraggio_APPAR
 
 ---
 
+## Novità
+
+### Integrazione Jira (Apertura Ticket Singola e Massiva)
+
+Il tool genera CSV pronti per l'import massivo in Jira. Il formato è identico allo script standalone utilizzato precedentemente:
+
+- **Separatore**: `;` (punto e virgola)
+- **Issue Type**: `Bug in esercizio`
+- **Assignee**: ID Jira preconfigurato (modificabile)
+- **Labels**: prese automaticamente da `Tipo Malf Jira` e `Cluster convertito Jira`
+- **Description**: formato `Reply DD-MM-YY: Valori recuperati: Check LTE:..., check SSH:..., Batteria:..., Porta aperta:..., Check Mongo:...`
+
+**Come usare:**
+
+1. **Singolo**: Apri il dettaglio di un device (doppio click) → clicca "🎫 Ticket Jira"
+2. **Massivo**: Nella tabella Alert o Dispositivi, seleziona più righe (Ctrl+Click o Shift+Click) → clicca "🎫 Jira Selezionati"
+3. Si apre un dialog dove **puoi modificare ogni campo** (Summary, Labels, Description) prima dell'export
+4. Clicca "Esporta CSV Jira" → il file viene salvato
+5. In Jira: Projects → Import Issues → CSV (separatore `;`)
+
+### Cluster NO DATA
+
+Nuova regola di detection che identifica dispositivi con status `NO DATA` / `NOT AVAILABLE` per 5+ giorni consecutivi senza ticket attivo. Diverso da OFF: il device potrebbe trasmettere ma senza dati validi.
+
+- **Severity**: MEDIUM se 5-9 giorni, HIGH se 10+ giorni
+- **Colore nella timeline**: indaco (#5C6BC0) per distinguere NO DATA da OFF
+
+### Filtro Ticket
+
+Nel tab Dispositivi è disponibile un filtro dropdown per stato ticket:
+
+- **Tutti**: nessun filtro
+- **Vuoto**: dispositivi senza ticket
+- **Aperto**: ticket aperto
+- **Chiuso**: ticket chiuso
+- **Scartato**: ticket scartato
+- **Interno**: ticket interno
+- **Risolto**: ticket risolto
+
+### Fix KO_NO_TICKET
+
+Corretto il bug per cui dispositivi con ticket già aperti (stato `Aperto` o `Interno`) venivano erroneamente segnalati come "KO senza ticket". Ora la regola verifica:
+1. Che `ticket_id` non sia vuoto/nullo
+2. Che `ticket_stato` sia `Aperto` o `Interno`
+
+Se il device ha un ticket con stato diverso (es. `Chiuso`, `Scartato`), viene segnalato con nota "(ticket XXX stato: Chiuso)".
+
+### Copia Info Dispositivo
+
+Dal dettaglio dispositivo (doppio click), il bottone "📋 Copia Info" copia negli appunti tutte le informazioni:
+- Anagrafica completa (DeviceID, IP, Linea, Fornitore, DT, etc.)
+- Diagnostiche (LTE, SSH, Mongo, Batteria, Porta)
+- Ticket corrente
+- Malfunzionamento
+- Storico ticket completo
+
+Tutti i campi di testo nel dettaglio sono selezionabili con il mouse.
+
+### Storico Ticket
+
+Il tool mantiene uno storico di tutti i ticket visti per ogni dispositivo. Ad ogni import:
+- Se il ticket è nuovo → viene creato un record nello storico
+- Se il ticket esiste già → viene aggiornato (last_seen, stato, risoluzione)
+
+Quando un dispositivo cambia ticket (es. il vecchio viene chiuso e ne viene aperto uno nuovo), entrambi restano nello storico. Nella finestra di dettaglio dispositivo, la sezione "Storico Ticket" mostra tutti i ticket passati e presenti con date e informazioni associate.
+
+---
+
 ## Sorgente Dati
 
 Il tool legge due sheet dal file Excel di monitoraggio:
 
-**Sheet "Stato"** (fonte primaria, ~987 righe): contiene l'anagrafica completa di ogni dispositivo (linea, sostegno, fornitore, DT, IP, tipo installazione), i check diagnostici (LTE, SSH, MongoDB, batteria, porta), le informazioni su malfunzionamenti e ticket, e le colonne storiche di availability (formato "AVAILABILITY DD mmm", es. "AVAILABILITY 17 dic").
+**Sheet "Stato"** (fonte primaria, ~987 righe): contiene l'anagrafica completa di ogni dispositivo, i check diagnostici, le informazioni su malfunzionamenti e ticket, e le colonne storiche di availability.
 
-**Sheet "Av Status"** (~1029 righe): contiene l'availability giornaliera recente con codici numerici (1=COMPLETE, 2=AVAILABLE, 3=NOT AVAILABLE, 4=NO DATA) per gli ultimi 5 giorni circa.
+**Sheet "Av Status"** (~1029 righe): contiene l'availability giornaliera recente con codici numerici (1=COMPLETE, 2=AVAILABLE, 3=NOT AVAILABLE, 4=NO DATA).
 
-**Regola importante**: Solo i dispositivi presenti nello sheet Stato vengono importati. Lo sheet Av Status contiene circa 45 dispositivi in più che corrispondono ad apparati non collaudati; questi vengono automaticamente ignorati.
+**Regola**: Solo i dispositivi presenti nello sheet Stato vengono importati.
 
 ---
 
@@ -40,108 +108,50 @@ Il tool legge due sheet dal file Excel di monitoraggio:
 
 ### Health (stato di salute)
 
-Ogni dispositivo ha uno stato di salute calcolato:
-
-- **OK**: l'ultimo dato di availability è OK e non ci sono diagnostiche critiche
-- **KO**: l'ultimo dato di availability è KO (dispositivo non operativo)
-- **DEGRADED**: l'availability è OK ma almeno una diagnostica è in allarme (es. LTE KO o porta aperta). Il dispositivo funziona ma con problemi
-- **UNKNOWN**: nessun dato di availability disponibile
+- **OK**: availability OK e nessuna diagnostica critica
+- **KO**: availability KO (dispositivo non operativo)
+- **DEGRADED**: availability OK ma almeno una diagnostica in allarme
+- **UNKNOWN**: nessun dato di availability
 
 ### Trend 7 giorni
 
-Il trend mostra lo storico availability degli ultimi 7 giorni come sequenza di quadrati pieni (OK) e vuoti (KO). Esempio: `■■■□□□■` significa OK per 3 giorni, poi KO per 3 giorni, poi di nuovo OK.
-
-Serve per capire a colpo d'occhio se un dispositivo è stabilmente OK, stabilmente KO, o intermittente (cambia spesso stato).
-
-### Giorni
-
-Indica da quanti giorni consecutivi il dispositivo è nello stato attuale. Se un dispositivo è KO da 14 giorni, vedrai "14" nella colonna Giorni. Questo numero è critico per capire la gravità: un KO da 1 giorno è diverso da un KO da 14 giorni senza ticket.
+Sequenza di ■ (OK) e □ (KO) per gli ultimi 7 giorni.
 
 ### Sotto Corona
 
-Un'installazione "sotto corona" (flag "SC" nella dashboard) indica un traliccio dove non sono installati i sensori di tiro sui conduttori e funi di guardia. Questi dispositivi non riceveranno mai metriche di tiro, quindi non devono generare alert relativi a quei sensori.
-
-L'informazione viene letta dalla colonna "Tipo Installazione AM" del file Excel:
-- "Inst. Completa" → installazione completa con tutti i sensori
-- "Inst. Sotto corona" o "Sotto Corona" → senza sensori di tiro
-
-Nella dashboard, i dispositivi sotto corona sono identificati dal badge **SC** visibile nelle tabelle Alert e Dispositivi, e nel dettaglio device.
+Installazione senza sensori di tiro. Badge **SC** nella dashboard.
 
 ### Fornitori
 
-I dispositivi sono gestiti da 3 fornitori (lotti):
-- **INDRA** (Lotto 1 — IndraOlivetti): ~491 dispositivi
-- **MII** (Lotto 2 — TelebitMarini): ~319 dispositivi
+- **INDRA** (Lotto 1): ~491 dispositivi
+- **MII** (Lotto 2): ~319 dispositivi
 - **SIRTI** (Lotto 3): ~176 dispositivi
 
 ### Diagnostiche
 
-Per ogni dispositivo vengono monitorati 5 check diagnostici:
-
 | Check | Significato |
 |-------|------------|
-| **LTE** | Connettività cellulare. KO = il dispositivo non è raggiungibile via LTE |
-| **SSH** | Accesso remoto via SSH. KO = impossibile connettersi al dispositivo |
-| **Mongo** | Invio dati a MongoDB. KO = il dispositivo non sta trasmettendo telemetria |
-| **Batteria** | Stato batteria. KO = batteria in allarme, rischio disconnessione |
-| **Porta** | Sensore porta. KO = porta del quadro aperta (possibile intrusione o guasto) |
-
-Quando sia LTE che SSH sono KO, il dispositivo è considerato **disconnesso** — non è raggiungibile in nessun modo.
+| **LTE** | Connettività cellulare |
+| **SSH** | Accesso remoto |
+| **Mongo** | Invio dati telemetria |
+| **Batteria** | Stato batteria |
+| **Porta** | Sensore porta quadro |
 
 ---
 
-## Sistema di Alert
+## Sistema di Alert (9 regole)
 
-Il tool genera automaticamente alert analizzando la combinazione di availability, diagnostiche e ticket. Ogni alert ha una **severity** (gravità):
-
-| Severity | Significato | Colore |
-|----------|------------|--------|
-| **CRITICAL** | Richiede intervento immediato | Rosso |
-| **HIGH** | Problema serio, va gestito presto | Arancione |
-| **MEDIUM** | Situazione da monitorare | Giallo |
-| **LOW** | Informativo, azione suggerita | Verde |
-
-### Le 8 regole di detection
-
-**1. KO_NO_TICKET** — Device KO senza ticket
-- Condizione: KO da 3+ giorni consecutivi E nessun ticket aperto
-- Severity: CRITICAL se KO da 7+ giorni, HIGH se 3-6 giorni
-- Azione suggerita: aprire un ticket al fornitore
-
-**2. NEW_KO** — Nuovo passaggio a KO
-- Condizione: era OK da 2+ giorni E oggi è KO
-- Severity: HIGH se senza ticket, MEDIUM se ticket già aperto
-- Significato: qualcosa si è rotto di recente
-
-**3. CONNECTIVITY_LOST** — Disconnessione completa
-- Condizione: LTE=KO E SSH=KO E nessun ticket aperto
-- Severity: HIGH
-- Significato: il dispositivo è irraggiungibile, potrebbe essere un problema di alimentazione o SIM
-
-**4. DOOR_ALARM** — Porta aperta
-- Condizione: Porta=KO E nessun ticket specifico per porta aperta
-- Severity: MEDIUM se nessun ticket, LOW se c'è un ticket per altro motivo
-- Significato: il quadro sul traliccio è aperto
-
-**5. BATTERY_ALARM** — Batteria in allarme
-- Condizione: Batteria=KO
-- Severity: HIGH se senza ticket, MEDIUM se ticket aperto
-- Significato: rischio imminente di disconnessione
-
-**6. INTERMITTENT** — Comportamento intermittente
-- Condizione: 3+ cambi di stato (OK↔KO) negli ultimi 7 giorni
-- Severity: MEDIUM
-- Significato: il dispositivo è instabile, potrebbe indicare problemi hardware o di connettività
-
-**7. RECOVERED** — Ripresa dopo guasto
-- Condizione: era KO da 2+ giorni E oggi è OK
-- Severity: LOW
-- Azione suggerita: se c'è un ticket aperto, verificare se chiudibile
-
-**8. OPEN_TICKET_OK** — Ticket aperto ma device OK
-- Condizione: OK da 5+ giorni consecutivi E ticket ancora aperto
-- Severity: LOW
-- Azione suggerita: verificare se il ticket può essere chiuso
+| # | Regola | Condizione | Severity |
+|---|--------|-----------|----------|
+| 1 | **KO_NO_TICKET** | KO 3+ gg senza ticket attivo | CRITICAL (7+gg) / HIGH (3-6gg) |
+| 2 | **NEW_KO** | Passaggio OK→KO dopo 2+ gg OK | HIGH / MEDIUM |
+| 3 | **CONNECTIVITY_LOST** | LTE=KO + SSH=KO senza ticket | HIGH |
+| 4 | **DOOR_ALARM** | Porta=KO senza ticket specifico | MEDIUM / LOW |
+| 5 | **BATTERY_ALARM** | Batteria=KO | HIGH / MEDIUM |
+| 6 | **INTERMITTENT** | 3+ cambi stato in 7 giorni | MEDIUM |
+| 7 | **RECOVERED** | Tornato OK dopo 2+ gg KO | LOW |
+| 8 | **OPEN_TICKET_OK** | OK 5+ gg ma ticket ancora aperto | LOW |
+| 9 | **NO_DATA** | NO DATA/NOT AVAILABLE 5+ gg | HIGH (10+gg) / MEDIUM |
 
 ---
 
@@ -149,49 +159,41 @@ Il tool genera automaticamente alert analizzando la combinazione di availability
 
 ### Tab Alert
 
-Mostra tutti gli alert attivi (non ancora confermati), ordinabili e filtrabili per severity, tipo, fornitore, DT. Ogni riga mostra il dispositivo con tutti i check diagnostici, il trend, e la descrizione del problema.
-
-Filtri disponibili:
-- **Dropdown in alto**: filtrano per severity, tipo alert, fornitore, DT
-- **Filtri inline sotto ogni colonna**: digitare per filtrare (es. digitare "SIRTI" nella colonna Fornitore)
-- **Bottone "Pulisci Filtri"**: resetta tutti i filtri
-- **Doppio click** su una riga: apre il dettaglio completo del dispositivo
+Alert attivi con filtri per severity, tipo, fornitore. Multi-selezione per generazione ticket Jira massiva.
 
 ### Tab Dispositivi
 
-Mostra tutti i 986 dispositivi con il loro stato corrente. Filtri per fornitore, health, tipo (master/slave), tipo installazione (completa/sotto corona).
+Tutti i dispositivi con filtri per fornitore, health, tipo, installazione, **stato ticket**.
 
 ### Tab Overview
 
-Vista aggregata con:
-- Stato per Fornitore (totale, OK, KO, degraded, % OK, ticket, sotto corona)
-- Stato per Direzione Territoriale
-- Matrice di correlazione diagnostica (quanti LTE KO, SSH KO, etc. per fornitore)
+Vista aggregata per fornitore e DT con export Excel.
 
 ### Dettaglio Device (doppio click)
 
-Finestra modale con:
-- Anagrafica completa (linea, sostegno, IP, tipo installazione, fornitore, DT)
-- 5 indicatori diagnostici con semaforo colorato
-- Trend e giorni nello stato attuale
-- Informazioni malfunzionamento (tipo, cluster, analisi, strategia)
-- Ticket associato (ID, stato, date)
-- Timeline availability (griglia colorata con tutti i giorni disponibili)
-- Alert recenti sul dispositivo
+Anagrafica, diagnostiche, malfunzionamento, ticket corrente, **storico ticket**, timeline availability (con colore NO DATA indaco), alert recenti. Bottoni per copiare info e creare ticket Jira.
+
+### Timeline Availability - Legenda Colori
+
+| Colore | Significato |
+|--------|------------|
+| 🟢 Verde | OK (ON / COMPLETE / AVAILABLE) |
+| 🔴 Rosso | OFF (KO) |
+| 🟡 Giallo | NOT AVAILABLE |
+| 🟣 Indaco | NO DATA |
 
 ---
 
 ## Workflow Quotidiano
 
-1. Scarica il file Excel aggiornato di monitoraggio
+1. Scarica il file Excel aggiornato
 2. Apri il tool e clicca **Importa Excel**
-3. Seleziona il file → il tool importa i dati e genera gli alert
-4. Vai nel tab **Alert** per vedere le situazioni critiche
-5. Filtra per CRITICAL/HIGH per le priorità
-6. Doppio click per il dettaglio di ogni dispositivo problematico
-7. Usa il tab **Overview** per la visione d'insieme
-
-Il database SQLite viene aggiornato ad ogni import. Non è necessario cancellare nulla tra un import e l'altro — i dati vengono sovrascritti/aggiornati.
+3. Vai nel tab **Alert** per le situazioni critiche
+4. Filtra per CRITICAL/HIGH
+5. Seleziona alert senza ticket → "🎫 Jira Selezionati" → modifica se necessario → esporta CSV
+6. Importa CSV in Jira
+7. Tab **Dispositivi** con filtro Ticket=Vuoto per vedere chi non ha ticket
+8. Doppio click per dettaglio con storico ticket
 
 ---
 
@@ -199,23 +201,22 @@ Il database SQLite viene aggiornato ad ogni import. Non è necessario cancellare
 
 ```
 digil-monitoring-pyqt/
-├── main.py           # GUI PyQt5 (dashboard principale)
-├── database.py       # Modelli SQLAlchemy + schema DB
-├── importer.py       # ETL: Excel → Database
-├── detection.py      # Motore di generazione alert (8 regole)
+├── main.py           # GUI PyQt5 (dashboard + dialog Jira)
+├── database.py       # Modelli SQLAlchemy + TicketHistory
+├── importer.py       # ETL: Excel → Database + storico ticket
+├── detection.py      # 9 regole di detection (+ NO_DATA)
 ├── requirements.txt  # Dipendenze Python
 ├── data/
-│   └── digil_monitoring.db  # Database SQLite (creato all'import)
-└── README.md         # Questa documentazione
+│   └── digil_monitoring.db  # Database SQLite
+└── README.md
 ```
 
 ---
 
 ## Note Tecniche
 
-- Il tool usa SQLite come database locale (file `data/digil_monitoring.db`)
-- Le date di availability dallo sheet Stato sono nel formato "AVAILABILITY DD mmm" (dicembre=2025, gen-feb=2026)
-- Le date dallo sheet Av Status sono oggetti datetime Python nelle colonne
-- I codici numerici di Av Status: 1=COMPLETE(OK), 2=AVAILABLE(OK), 3=NOT AVAILABLE(KO), 4=NO DATA(KO)
-- Gli alert vengono rigenerati ad ogni import; quelli confermati (acknowledged) vengono preservati
-- Il trend è calcolato sugli ultimi 7 giorni di availability disponibili
+- SQLite con WAL mode per performance
+- Storico ticket persistente: i ticket chiusi non vengono mai cancellati
+- CSV Jira: encoding UTF-8 BOM, separatore `;`, compatibile con import bulk Jira
+- Multi-selezione nelle tabelle (Ctrl+Click, Shift+Click) per operazioni massive
+- Al primo import dopo l'aggiornamento, cancellare `data/digil_monitoring.db` per ricreare lo schema con la nuova tabella TicketHistory

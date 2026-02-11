@@ -1,5 +1,6 @@
 """
 DIGIL Monitoring - Database Models
+Aggiunto: TicketHistory per storico ticket nel tempo.
 """
 from datetime import datetime, date
 from sqlalchemy import (
@@ -29,11 +30,11 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
 class Device(Base):
     __tablename__ = "devices"
     device_id = Column(String, primary_key=True)
-    tipo_install = Column(String)       # "Inst. Completa" / "Inst. Sotto corona" / etc
-    is_sotto_corona = Column(Boolean, default=False)  # True se sotto corona
+    tipo_install = Column(String)
+    is_sotto_corona = Column(Boolean, default=False)
     linea = Column(String)
     st_sostegno = Column(String)
-    sistema_digil = Column(String)      # "digil master" / "digil slave"
+    sistema_digil = Column(String)
     note_piano_lora = Column(String)
     dt = Column(String)
     denominazione = Column(String)
@@ -75,7 +76,7 @@ class Device(Base):
     cluster_convertito = Column(String)
     cluster_jira = Column(String)
     tipo_malf_jira = Column(String)
-    # Ticket
+    # Ticket corrente
     ticket_id = Column(String)
     ticket_stato = Column(String)
     ticket_data_apertura = Column(Date)
@@ -84,6 +85,8 @@ class Device(Base):
 
     availability = relationship("AvailabilityDaily", back_populates="device", cascade="all, delete-orphan")
     events = relationship("AnomalyEvent", back_populates="device", cascade="all, delete-orphan")
+    ticket_history = relationship("TicketHistory", back_populates="device", cascade="all, delete-orphan",
+                                  order_by="TicketHistory.first_seen.desc()")
 
 
 class AvailabilityDaily(Base):
@@ -112,6 +115,36 @@ class AnomalyEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     device = relationship("Device", back_populates="events")
     __table_args__ = (Index("idx_ev_sev", "severity"), Index("idx_ev_ack", "acknowledged"),)
+
+
+class TicketHistory(Base):
+    """Storico ticket: ogni record = un ticket unico per device.
+    Ad ogni import, se il ticket_id del device è diverso dal precedente,
+    si crea un nuovo record. I vecchi ticket restano nel DB."""
+    __tablename__ = "ticket_history"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_id = Column(String, ForeignKey("devices.device_id"), nullable=False)
+    ticket_id = Column(String, nullable=False)
+    ticket_stato = Column(String)
+    ticket_data_apertura = Column(Date)
+    ticket_data_risoluzione = Column(Date)
+    tipo_malfunzionamento = Column(String)
+    cluster_analisi = Column(String)
+    analisi_malfunzionamento = Column(Text)
+    tipologia_intervento = Column(String)
+    strategia_risolutiva = Column(Text)
+    risoluzione_attuata = Column(Text)
+    cause_anomalie = Column(String)
+    note = Column(Text)
+    cluster_jira = Column(String)
+    tipo_malf_jira = Column(String)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    device = relationship("Device", back_populates="ticket_history")
+    __table_args__ = (
+        Index("idx_th_device", "device_id"),
+        Index("idx_th_ticket", "ticket_id"),
+    )
 
 
 class ImportLog(Base):
