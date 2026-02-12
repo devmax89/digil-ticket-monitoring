@@ -1,6 +1,6 @@
 """
 DIGIL Monitoring - Excel Importer
-Aggiunto: storico ticket (TicketHistory) aggiornato ad ogni import.
+4 stati availability: COMPLETE(OK), AVAILABLE(OK), NOT AVAILABLE(KO), NO DATA(KO)
 """
 import pandas as pd
 import numpy as np
@@ -10,7 +10,13 @@ from typing import Dict, Tuple, Optional
 from pathlib import Path
 from database import get_session, init_db, Device, AvailabilityDaily, AnomalyEvent, ImportLog, TicketHistory
 
-AV_STATUS_NUMERIC = {1: "COMPLETE", 2: "AVAILABLE", 3: "NOT AVAILABLE", 4: "NO DATA"}
+# I 4 stati ufficiali derivati dai codici numerici dello sheet Av Status
+AV_STATUS_NUMERIC = {
+    1: "COMPLETE",        # Tutte le metriche → OK
+    2: "AVAILABLE",       # Almeno meteo + una di tiro → OK
+    3: "NOT AVAILABLE",   # Manca almeno una metrica meteo e un sensore di tiro → KO
+    4: "NO DATA",         # Il dispositivo non comunica misure → KO
+}
 
 FORNITORE_MAP = {
     "Lotto1-IndraOlivetti": "INDRA", "Lotto2-TelebitMarini": "MII", "Lotto3-Sirti": "SIRTI",
@@ -26,16 +32,40 @@ def normalize_fornitore(raw) -> str:
 
 
 def normalize_availability(raw_value) -> Tuple[str, str]:
+    """Normalizza un valore di availability.
+    Ritorna (raw_status, norm_status) dove:
+      raw_status = uno dei 4 stati: COMPLETE, AVAILABLE, NOT AVAILABLE, NO DATA
+      norm_status = OK o KO
+    """
     if pd.isna(raw_value) or raw_value == "" or raw_value is None:
         return ("UNKNOWN", "UNKNOWN")
+
+    # Codice numerico dallo sheet Av Status (1,2,3,4)
     if isinstance(raw_value, (int, float)):
         val = int(raw_value)
         raw = AV_STATUS_NUMERIC.get(val, f"CODE_{val}")
-        norm = "OK" if val in [1, 2] else "KO"
+        norm = "OK" if val in (1, 2) else "KO"
         return (raw, norm)
+
+    # Testo dallo sheet Stato (colonne AVAILABILITY)
     val = str(raw_value).strip().upper()
-    if val in ["ON", "AVAILABLE", "COMPLETE"]: return (val, "OK")
-    elif val in ["OFF", "NO DATA", "NOT AVAILABLE", "KO"]: return (val, "KO")
+
+    # Mappa diretta ai 4 stati ufficiali
+    if val in ("COMPLETE",):
+        return ("COMPLETE", "OK")
+    elif val in ("AVAILABLE", "ON"):
+        # "ON" mappato come AVAILABLE (legacy compatibilità)
+        return ("AVAILABLE", "OK")
+    elif val in ("NOT AVAILABLE",):
+        return ("NOT AVAILABLE", "KO")
+    elif val in ("NO DATA",):
+        return ("NO DATA", "KO")
+    elif val in ("OFF",):
+        # "OFF" mappato come NOT AVAILABLE (legacy compatibilità)
+        return ("NOT AVAILABLE", "KO")
+    elif val in ("KO",):
+        return ("NOT AVAILABLE", "KO")
+
     return (val, "UNKNOWN")
 
 
@@ -84,45 +114,32 @@ class ExcelImporter:
             print("[1/5] Lettura sheet 'Stato'...")
             df_stato = pd.read_excel(self.file_path, sheet_name='Stato', engine='openpyxl', header=1)
             print(f"       {len(df_stato)} righe")
-
             print("[2/5] Lettura sheet 'Av Status'...")
             df_av = pd.read_excel(self.file_path, sheet_name='Av Status', engine='openpyxl')
             print(f"       {len(df_av)} righe")
-
             print("[3/5] Import dispositivi e availability...")
             self._import_devices(session, df_stato)
             self._import_availability_stato(session, df_stato)
             self._import_availability_av_status(session, df_av)
-
             print("[4/5] Aggiornamento storico ticket...")
             self._update_ticket_history(session)
-
             print("[5/5] Calcolo trend e stati...")
             self._compute_derived_states(session)
-
             log = ImportLog(filename=self.file_path.name, devices_total=self.stats["devices_imported"], status="OK")
-            session.add(log)
-            session.commit()
-            print(f"\nImport completato: {self.stats['devices_imported']} dispositivi, "
-                  f"{self.stats['availability_records']} record avail, "
+            session.add(log); session.commit()
+            print(f"\nImport: {self.stats['devices_imported']} dispositivi, {self.stats['availability_records']} avail, "
                   f"{self.stats['tickets_new']} nuovi ticket, {self.stats['tickets_updated']} aggiornati")
             return self.stats
         except Exception as e:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+            session.rollback(); raise
+        finally: session.close()
 
     def _import_devices(self, session, df_stato):
         for _, row in df_stato.iterrows():
             device_id = safe_str(row.get("DeviceID"))
             if not device_id: continue
-
             device = session.get(Device, device_id)
-            if device is None:
-                device = Device(device_id=device_id)
-                session.add(device)
-
+            if device is None: device = Device(device_id=device_id); session.add(device)
             device.tipo_install = safe_str(row.get("Tipo Installazione AM"))
             device.is_sotto_corona = is_sotto_corona(safe_str(row.get("Tipo Installazione AM")))
             device.linea = safe_str(row.get("Linea"))
@@ -164,28 +181,18 @@ class ExcelImporter:
             device.ticket_data_risoluzione = safe_date(row.get("Data risoluzione"))
             for col in df_stato.columns:
                 if 'Unnamed: 68' in str(col) or col == df_stato.columns[-1]:
-                    device.misure_mancanti = safe_str(row.get(col))
-                    break
+                    device.misure_mancanti = safe_str(row.get(col)); break
             self.stats["devices_imported"] += 1
         session.flush()
 
     def _update_ticket_history(self, session):
-        """Aggiorna storico ticket per ogni device che ha un ticket_id.
-        Se il ticket esiste già in history → aggiorna last_seen e stato.
-        Se è un ticket nuovo → crea record storico."""
         now = datetime.utcnow()
         for device in session.query(Device).filter(Device.ticket_id.isnot(None)).all():
-            if not device.ticket_id:
-                continue
-
-            existing = (session.query(TicketHistory)
-                        .filter(TicketHistory.device_id == device.device_id,
-                                TicketHistory.ticket_id == device.ticket_id)
-                        .first())
-
+            if not device.ticket_id: continue
+            existing = session.query(TicketHistory).filter(
+                TicketHistory.device_id == device.device_id, TicketHistory.ticket_id == device.ticket_id).first()
             if existing:
-                existing.last_seen = now
-                existing.ticket_stato = device.ticket_stato
+                existing.last_seen = now; existing.ticket_stato = device.ticket_stato
                 existing.ticket_data_risoluzione = device.ticket_data_risoluzione
                 if device.tipo_malfunzionamento: existing.tipo_malfunzionamento = device.tipo_malfunzionamento
                 if device.cluster_analisi: existing.cluster_analisi = device.cluster_analisi
@@ -199,24 +206,15 @@ class ExcelImporter:
                 if device.tipo_malf_jira: existing.tipo_malf_jira = device.tipo_malf_jira
                 self.stats["tickets_updated"] += 1
             else:
-                session.add(TicketHistory(
-                    device_id=device.device_id,
-                    ticket_id=device.ticket_id,
-                    ticket_stato=device.ticket_stato,
-                    ticket_data_apertura=device.ticket_data_apertura,
+                session.add(TicketHistory(device_id=device.device_id, ticket_id=device.ticket_id,
+                    ticket_stato=device.ticket_stato, ticket_data_apertura=device.ticket_data_apertura,
                     ticket_data_risoluzione=device.ticket_data_risoluzione,
-                    tipo_malfunzionamento=device.tipo_malfunzionamento,
-                    cluster_analisi=device.cluster_analisi,
+                    tipo_malfunzionamento=device.tipo_malfunzionamento, cluster_analisi=device.cluster_analisi,
                     analisi_malfunzionamento=device.analisi_malfunzionamento,
-                    tipologia_intervento=device.tipologia_intervento,
-                    strategia_risolutiva=device.strategia_risolutiva,
-                    risoluzione_attuata=device.risoluzione_attuata,
-                    cause_anomalie=device.cause_anomalie,
-                    note=device.note,
-                    cluster_jira=device.cluster_jira,
-                    tipo_malf_jira=device.tipo_malf_jira,
-                    first_seen=now, last_seen=now,
-                ))
+                    tipologia_intervento=device.tipologia_intervento, strategia_risolutiva=device.strategia_risolutiva,
+                    risoluzione_attuata=device.risoluzione_attuata, cause_anomalie=device.cause_anomalie,
+                    note=device.note, cluster_jira=device.cluster_jira, tipo_malf_jira=device.tipo_malf_jira,
+                    first_seen=now, last_seen=now))
                 self.stats["tickets_new"] += 1
         session.flush()
 
@@ -236,8 +234,7 @@ class ExcelImporter:
                     session.add(AvailabilityDaily(device_id=device_id, check_date=check_date,
                                                   raw_status=raw_status, norm_status=norm_status))
                     self.stats["availability_records"] += 1
-                else:
-                    existing.raw_status = raw_status; existing.norm_status = norm_status
+                else: existing.raw_status = raw_status; existing.norm_status = norm_status
         session.flush()
 
     def _import_availability_av_status(self, session, df_av):
@@ -245,13 +242,11 @@ class ExcelImporter:
         date_cols = [c for c in df_av.columns if isinstance(c, datetime)]
         skipped = 0
         for col in date_cols:
-            check_date = col.date()
-            self.stats["new_dates"].append(check_date)
+            check_date = col.date(); self.stats["new_dates"].append(check_date)
             for _, row in df_av.iterrows():
                 device_id = safe_str(row.get("DeviceID"))
                 if not device_id: continue
-                if device_id not in known_ids:
-                    skipped += 1; continue
+                if device_id not in known_ids: skipped += 1; continue
                 raw_status, norm_status = normalize_availability(row.get(col))
                 if norm_status == "UNKNOWN": continue
                 existing = session.get(AvailabilityDaily, (device_id, check_date))
@@ -259,26 +254,22 @@ class ExcelImporter:
                     session.add(AvailabilityDaily(device_id=device_id, check_date=check_date,
                                                   raw_status=raw_status, norm_status=norm_status))
                     self.stats["availability_records"] += 1
-                else:
-                    existing.raw_status = raw_status; existing.norm_status = norm_status
+                else: existing.raw_status = raw_status; existing.norm_status = norm_status
         if skipped: print(f"       {skipped} record Av Status ignorati (device non in Stato)")
         session.flush()
 
     def _compute_derived_states(self, session):
         for device in session.query(Device).all():
-            avail = (session.query(AvailabilityDaily)
-                     .filter(AvailabilityDaily.device_id == device.device_id)
+            avail = (session.query(AvailabilityDaily).filter(AvailabilityDaily.device_id == device.device_id)
                      .order_by(AvailabilityDaily.check_date.desc()).limit(30).all())
-            if not avail:
-                device.current_health = "UNKNOWN"; continue
+            if not avail: device.current_health = "UNKNOWN"; continue
             latest = avail[0]
             device.last_avail_status = latest.raw_status
             device.last_avail_norm = latest.norm_status
             device.last_avail_date = latest.check_date
             recent_7 = sorted(avail[:7], key=lambda r: r.check_date)
             device.trend_7d = "".join("O" if r.norm_status == "OK" else "K" for r in recent_7)
-            current_norm = latest.norm_status
-            days = 0
+            current_norm = latest.norm_status; days = 0
             for r in avail:
                 if r.norm_status == current_norm: days += 1
                 else: break
