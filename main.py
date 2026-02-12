@@ -25,6 +25,7 @@ JIRA_USERS = {
     "Massimiliano Tavernese": "5e8ae84a84dec20b8159e37a",
     "Paolo Marino": "712020:18a68569-e00b-414c-bd78-2ef0e43c0534",
     "Vittorio Mitri": "5e86f312b39dbf0c114bdefa",
+    "Federica Patacconi": "62690217c72f140069fb383c",
     "Team AMS": "622f434533fb840069656a1a",
 }
 JIRA_USER_NAMES = list(JIRA_USERS.keys())
@@ -51,7 +52,7 @@ QTableWidget::item { padding: 3px 5px; }
 QTableWidget::item:selected { background: #CCE5FF; color: black; }
 QHeaderView::section { background: #0066CC; color: white; padding: 6px; border: none; font-weight: bold; font-size: 11px; }
 QTabWidget::pane { border: 1px solid #CCCCCC; background: white; }
-QTabBar::tab { background: #F0F0F0; border: 1px solid #CCCCCC; padding: 12px 30px; font-weight: bold; font-size: 13px; min-width: 100px; }
+QTabBar::tab { background: #F0F0F0; border: 1px solid #CCCCCC; padding: 10px 24px; font-weight: bold; font-size: 13px; min-width: 100px; }
 QTabBar::tab:selected { background: #0066CC; color: white; }
 QTabBar::tab:hover:!selected { background: #E8F0FE; }
 QLineEdit { border: 1px solid #CCCCCC; border-radius: 3px; padding: 4px 8px; }
@@ -68,7 +69,7 @@ SEV_BG = {"CRITICAL": "#FFEBEE", "HIGH": "#FFF3E0", "MEDIUM": "#FFFDE7", "LOW": 
 HEALTH_BG = {"OK": "#E8F5E9", "KO": "#FFEBEE", "DEGRADED": "#FFF3E0", "UNKNOWN": "#F5F5F5"}
 AVAIL_COLORS = {"COMPLETE": "#2E7D32", "AVAILABLE": "#66BB6A", "NOT AVAILABLE": "#F9A825", "NO DATA": "#C62828"}
 
-JIRA_LABELS = ["Misure_fuori_range", "Porta_aperta", "Misure_assenti", "Disconnesso", "Comandi", "Misure_parziali", "Allarme_batteria", "DigilApp", "PiattaformaIoT"]
+JIRA_LABELS = ["Misure_fuori_range", "Misure_assenti", "Disconnesso", "Allarme_batteria", "Porta_aperta", "Porta_dis", "Misure_parziali"]
 
 def avail_color(raw_status):
     """Map any raw availability status to its color. Handles CODE_3, CODE_4, etc."""
@@ -161,14 +162,17 @@ class JiraTicketDialog(QDialog):
         form.addRow("Watchers:", wg)
         lg = QWidget(); lgl = QHBoxLayout(lg); lgl.setContentsMargins(0,0,0,0); lgl.setSpacing(4); self.label_cbs = {}
         for lname in JIRA_LABELS: cb = QCheckBox(lname); self.label_cbs[lname] = cb; lgl.addWidget(cb)
-        lscroll = QScrollArea(); lscroll.setWidgetResizable(True); lscroll.setMaximumHeight(36); lscroll.setWidget(lg); form.addRow("Labels:", lscroll)
+        lab_apply = QPushButton("Applica a tutti"); lab_apply.setObjectName("jira"); lab_apply.setFixedWidth(110); lab_apply.clicked.connect(self._apply_labels); lgl.addWidget(lab_apply)
+        lscroll = QScrollArea(); lscroll.setWidgetResizable(True); lscroll.setMaximumHeight(40); lscroll.setWidget(lg)
+        form.addRow("Labels:", lscroll)
+        form.addRow("", QLabel("<small><i>Flagga max 2 labels e clicca 'Applica a tutti' per sovrascrivere Label1/Label2 su tutti i ticket. Oppure modifica singole celle nella tabella.</i></small>"))
         self.due_date_edit = QDateEdit(); self.due_date_edit.setCalendarPopup(True); self.due_date_edit.setDate(QDate.currentDate().addDays(14)); self.due_date_edit.setDisplayFormat("dd/MM/yyyy"); form.addRow("Due Date:", self.due_date_edit)
         self.reply_date = QLineEdit(datetime.now().strftime("%d-%m-%y")); form.addRow("Data Reply:", self.reply_date)
         layout.addLayout(form)
         cols = ["DeviceID","Summary","Label1","Label2","Description"]
         self.tt = QTableWidget(); self.tt.setColumnCount(5); self.tt.setHorizontalHeaderLabels(cols)
         self.tt.setRowCount(n); self.tt.horizontalHeader().setStretchLastSection(True); self.tt.setAlternatingRowColors(True)
-        self.tt.setColumnWidth(0,180); self.tt.setColumnWidth(1,250); self.tt.setColumnWidth(2,100); self.tt.setColumnWidth(3,100)
+        self.tt.setColumnWidth(0,180); self.tt.setColumnWidth(1,250); self.tt.setColumnWidth(2,170); self.tt.setColumnWidth(3,170)
         for i, td in enumerate(tickets_data):
             did = td.get("_full_did", td.get("DeviceID",""))
             tm = td.get("tipo_malf","") or ""; tm = "" if tm=="-" else tm
@@ -180,7 +184,10 @@ class JiraTicketDialog(QDialog):
             desc = f"Reply {self.reply_date.text()}: Valori recuperati: Check LTE:{lte}, check SSH:{ssh}, Batteria:{batt}, Porta aperta:{porta}, Check Mongo:{mongo}"
             if note: desc += f"\r\n{note}"
             self.tt.setItem(i,0,QTableWidgetItem(did)); self.tt.setItem(i,1,QTableWidgetItem(f"Device {did} {tm}".strip()))
-            self.tt.setItem(i,2,QTableWidgetItem(l1)); self.tt.setItem(i,3,QTableWidgetItem(l2)); self.tt.setItem(i,4,QTableWidgetItem(desc))
+            self.tt.setItem(i,0,QTableWidgetItem(did)); self.tt.setItem(i,1,QTableWidgetItem(f"Device {did} {tm}".strip()))
+            cb1 = QComboBox(); cb1.addItem(""); cb1.addItems(JIRA_LABELS); cb1.setCurrentText(l1 if l1 in JIRA_LABELS else ""); cb1.setEditable(True); cb1.setEditText(l1); cb1.setMinimumWidth(160)
+            cb2 = QComboBox(); cb2.addItem(""); cb2.addItems(JIRA_LABELS); cb2.setCurrentText(l2 if l2 in JIRA_LABELS else ""); cb2.setEditable(True); cb2.setEditText(l2); cb2.setMinimumWidth(160)
+            self.tt.setCellWidget(i,2,cb1); self.tt.setCellWidget(i,3,cb2); self.tt.setItem(i,4,QTableWidgetItem(desc))
         layout.addWidget(QLabel("<i>Puoi modificare qualsiasi cella prima dell'export</i>")); layout.addWidget(self.tt)
         br = QHBoxLayout()
         cpb = QPushButton("Copia tutto"); cpb.setObjectName("secondary"); cpb.clicked.connect(self._copy); br.addWidget(cpb); br.addStretch()
@@ -188,7 +195,34 @@ class JiraTicketDialog(QDialog):
         eb = QPushButton(f"Esporta CSV Jira ({n})"); eb.setObjectName("jira"); eb.clicked.connect(self._export); br.addWidget(eb); layout.addLayout(br)
 
     def _rows(self):
-        return [{c: (self.tt.item(i,j).text() if self.tt.item(i,j) else "") for j,c in enumerate(["DeviceID","Summary","Label1","Label2","Description"])} for i in range(self.tt.rowCount())]
+        rows = []
+        for i in range(self.tt.rowCount()):
+            did = self.tt.item(i,0).text() if self.tt.item(i,0) else ""
+            summ = self.tt.item(i,1).text() if self.tt.item(i,1) else ""
+            w1 = self.tt.cellWidget(i,2); l1 = w1.currentText() if w1 and isinstance(w1, QComboBox) else (self.tt.item(i,2).text() if self.tt.item(i,2) else "")
+            w2 = self.tt.cellWidget(i,3); l2 = w2.currentText() if w2 and isinstance(w2, QComboBox) else (self.tt.item(i,3).text() if self.tt.item(i,3) else "")
+            desc = self.tt.item(i,4).text() if self.tt.item(i,4) else ""
+            rows.append({"DeviceID":did,"Summary":summ,"Label1":l1,"Label2":l2,"Description":desc})
+        return rows
+    def _apply_labels(self):
+        checked = [nm for nm, cb in self.label_cbs.items() if cb.isChecked()]
+        if len(checked) > 2:
+            QMessageBox.warning(self, "Troppe labels", "Seleziona al massimo 2 labels da applicare."); return
+        if not checked:
+            QMessageBox.information(self, "Labels", "Nessuna label selezionata."); return
+        l1 = checked[0] if len(checked) >= 1 else ""
+        l2 = checked[1] if len(checked) >= 2 else ""
+        for i in range(self.tt.rowCount()):
+            w1 = self.tt.cellWidget(i, 2)
+            w2 = self.tt.cellWidget(i, 3)
+            if w1 and isinstance(w1, QComboBox):
+                idx1 = w1.findText(l1)
+                if idx1 >= 0: w1.setCurrentIndex(idx1)
+                else: w1.setEditText(l1)
+            if w2 and isinstance(w2, QComboBox):
+                idx2 = w2.findText(l2)
+                if idx2 >= 0: w2.setCurrentIndex(idx2)
+                else: w2.setEditText(l2)
     def _copy(self):
         QApplication.clipboard().setText("\n---\n".join(f"DeviceID: {r['DeviceID']}\nSummary: {r['Summary']}\nLabels: {r['Label1']} {r['Label2']}\nDescription: {r['Description']}" for r in self._rows()))
         QMessageBox.information(self, "Copiato", f"{self.tt.rowCount()} ticket copiati!")
@@ -201,8 +235,8 @@ class JiraTicketDialog(QDialog):
         ridx = self.reporter_combo.currentIndex(); rid = self.reporter_combo.itemData(ridx) if ridx >= 0 and self.reporter_combo.itemData(ridx) else ""
         wids = [JIRA_USERS[nm] for nm, cb in self.watcher_cbs.items() if cb.isChecked()]
         dd = self.due_date_edit.date().toString("dd/MM/yyyy") + " 00:00"
-        el = [nm for nm, cb in self.label_cbs.items() if cb.isChecked()]
-        ml = 2 + len(el); mw = max(len(wids), 1)
+        mw = max(len(wids), 1)
+        ml = 2  # Always 2 label columns: Label1 and Label2
         hdr = ["Summary","Issue Type","Priority","Assignee"]
         if rid: hdr.append("Reporter")
         hdr.append("Due date")
@@ -211,8 +245,7 @@ class JiraTicketDialog(QDialog):
             f.write(";".join(hdr) + "\n")
             for r in self._rows():
                 s = r["Summary"].replace('"','""'); d = r["Description"].replace('"','""')
-                labs = [r["Label1"], r["Label2"]] + el
-                while len(labs) < ml: labs.append("")
+                labs = [r["Label1"], r["Label2"]]
                 ws = list(wids)
                 while len(ws) < mw: ws.append("")
                 parts = [f'"{s}"', it, pr, aid]
@@ -347,12 +380,12 @@ class MainWindow(QMainWindow):
         self.card_total = self._make_card("0","Dispositivi"); self.card_ok = self._make_card("0","OK","#E8F5E9"); self.card_ko = self._make_card("0","KO","#FFEBEE"); self.card_deg = self._make_card("0","Degraded","#FFF3E0"); self.card_crit = self._make_card("0","Alert Critical","#FFEBEE"); self.card_high = self._make_card("0","Alert High","#FFF3E0"); self.card_tickets = self._make_card("0","Ticket Aperti")
         for c in [self.card_total,self.card_ok,self.card_ko,self.card_deg,self.card_crit,self.card_high,self.card_tickets]: cl.addWidget(c)
         ml.addLayout(cl)
-        self.tabs = QTabWidget(); self.tabs.addTab(self._create_alerts_tab(), "\u26a0 Alert"); self.tabs.addTab(self._create_devices_tab(), "\U0001f4cb Dispositivi"); self.tabs.addTab(self._create_overview_tab(), "\U0001f4ca Overview")
+        self.tabs = QTabWidget(); self.tabs.addTab(self._create_alerts_tab(), "\u26a0 Alert"); self.tabs.addTab(self._create_devices_tab(), "\U0001f4cb Dispositivi"); self.tabs.addTab(self._create_overview_tab(), "\U0001f4ca Overview"); self.tabs.addTab(self._create_ticket_tab(), "\U0001f3ab Ticket")
         self.tabs.currentChanged.connect(self._on_tab_changed); ml.addWidget(self.tabs)
         self.status_bar = QStatusBar(); self.setStatusBar(self.status_bar); self.status_label = QLabel("Pronto"); self.status_bar.addWidget(self.status_label, stretch=1)
 
     def _make_card(self, value, label, bg="#FFFFFF"):
-        card = QWidget(); card.setStyleSheet(f"background:{bg};border:1px solid #CCC;border-radius:5px;"); card.setFixedHeight(78); card.setMinimumWidth(280)
+        card = QWidget(); card.setStyleSheet(f"background:{bg};border:1px solid #CCC;border-radius:5px;"); card.setFixedHeight(78); card.setMinimumWidth(100)
         vl = QVBoxLayout(card); vl.setSpacing(2); vl.setContentsMargins(12,8,12,8)
         v = QLabel(value); v.setFont(QFont("Segoe UI",30,QFont.Bold)); v.setStyleSheet("background:transparent;border:none;color:#333;"); vl.addWidget(v)
         l = QLabel(label); l.setStyleSheet("font-size:10px;color:#666;background:transparent;border:none;"); vl.addWidget(l); card._value_label = v; return card
@@ -448,7 +481,16 @@ class MainWindow(QMainWindow):
         gdt = QGroupBox("Stato per DT"); dtl = QVBoxLayout(); dtl.addWidget(self.ov_dt_table); gdt.setLayout(dtl); ccl.addWidget(gdt)
         self.ov_corr_table = QTableWidget(); self.ov_corr_table.setColumnCount(8); self.ov_corr_table.setHorizontalHeaderLabels(["Fornitore","Totale","LTE KO","SSH KO","Mongo KO","Porta KO","Batt KO","Disconnessi"]); self.ov_corr_table.horizontalHeader().setStretchLastSection(True)
         gc = QGroupBox("Correlazione Diagnostica"); gcl = QVBoxLayout(); gcl.addWidget(self.ov_corr_table); gc.setLayout(gcl); ccl.addWidget(gc)
+        self.ov_ticket_table = QTableWidget(); self.ov_ticket_table.setColumnCount(3); self.ov_ticket_table.setHorizontalHeaderLabels(["Stato Ticket","Conteggio","% sul totale"]); self.ov_ticket_table.horizontalHeader().setStretchLastSection(True)
+        gtk = QGroupBox("Riepilogo Ticket per Stato"); tkl = QVBoxLayout(); tkl.addWidget(self.ov_ticket_table); gtk.setLayout(tkl); ccl.addWidget(gtk)
         ccl.addStretch(); scroll.setWidget(content); layout.addWidget(scroll); return tab
+
+    def _create_ticket_tab(self):
+        tab = QWidget(); layout = QVBoxLayout(tab)
+        layout.addWidget(QLabel("<b style='color:#0066CC;font-size:14px'>Tracciamento Ticket</b>"))
+        layout.addWidget(QLabel("<i>Sezione in costruzione — qui verranno inserite le funzionalita di tracciamento ticket.</i>"))
+        layout.addStretch()
+        return tab
 
     def refresh_data(self):
         session = get_session()
@@ -553,12 +595,30 @@ class MainWindow(QMainWindow):
                 self.ov_corr_table.setItem(i,0,colored_item(f,bold=True)); self.ov_corr_table.setItem(i,1,colored_item(total))
                 self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_lte=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.check_ssh=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,5,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,6,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True)); self.ov_corr_table.setItem(i,7,colored_item(sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO"),"#FFEBEE","#C62828",True))
             self.ov_corr_table.resizeRowsToContents()
+            # Ticket per stato
+            from sqlalchemy import func, case
+            ticket_stati = session.query(Device.ticket_stato, func.count()).group_by(Device.ticket_stato).all()
+            total_dev = session.query(Device).count() or 1
+            stati_map = {}
+            for stato, cnt in ticket_stati:
+                key = stato if stato else "(Nessun ticket)"
+                stati_map[key] = stati_map.get(key, 0) + cnt
+            ordered = sorted(stati_map.items(), key=lambda x: -x[1])
+            self.ov_ticket_table.setRowCount(len(ordered))
+            for i, (stato, cnt) in enumerate(ordered):
+                pct = round(cnt / total_dev * 100, 1)
+                bg = "#FFEBEE" if stato == "Aperto" else "#E8F5E9" if stato in ("Chiuso","Risolto") else "#FFF3E0" if stato == "Interno" else "#F5F5F5"
+                self.ov_ticket_table.setItem(i, 0, colored_item(stato, bg, bold=True))
+                self.ov_ticket_table.setItem(i, 1, colored_item(cnt, bold=True))
+                self.ov_ticket_table.setItem(i, 2, colored_item(f"{pct}%"))
+            self.ov_ticket_table.resizeRowsToContents()
         finally: session.close()
 
     def _on_tab_changed(self, idx):
         if idx==0: self.refresh_alerts()
         elif idx==1: self.refresh_devices()
         elif idx==2: self.refresh_overview()
+        elif idx==3: pass  # Ticket tab - placeholder
 
     def do_import(self):
         fp, _ = QFileDialog.getOpenFileName(self, "Seleziona File Excel", "", "Excel (*.xlsx *.xls);;All (*)"); 
