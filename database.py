@@ -72,6 +72,7 @@ class Device(Base):
     cluster_convertito = Column(String)
     cluster_jira = Column(String)
     tipo_malf_jira = Column(String)
+    macro_area_causa = Column(String)
     ticket_id = Column(String)
     ticket_stato = Column(String)
     ticket_data_apertura = Column(Date)

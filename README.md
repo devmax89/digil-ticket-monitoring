@@ -218,6 +218,85 @@ Ad ogni import, i ticket vengono tracciati nel DB. Anche dopo che un ticket vien
 5. Seleziona righe → **Jira Selezionati** → configura rubrica + labels → export CSV
 6. Import CSV in Jira (sep `;`)
 7. Tab **Overview** per la visione d'insieme
+8. Tab **Ticket** per il tracciamento ticket Jira
+
+---
+
+## Integrazione Jira — Tracciamento Ticket
+
+### Sorgente Dati
+
+I ticket vengono scaricati dal progetto **IA20** su Jira Cloud (`terna-it.atlassian.net`). Solo i ticket di tipo **Bug in esercizio** vengono importati.
+
+### Download Automatico
+
+All'avvio del tool, se le credenziali Jira sono configurate come variabili d'ambiente, i ticket vengono scaricati automaticamente:
+
+```bash
+# Windows
+set JIRA_EMAIL=nome.cognome@reply.it
+set JIRA_API_TOKEN=your_api_token
+
+# Linux/Mac
+export JIRA_EMAIL=nome.cognome@reply.it
+export JIRA_API_TOKEN=your_api_token
+```
+
+Il download si ripete automaticamente ogni ora. In alternativa:
+- **Aggiorna da Jira**: bottone per forzare il refresh manuale
+- **Importa Excel**: carica un file Excel generato da `scaricaTicketJira.py`
+
+### Estrazione DeviceID
+
+Il DeviceID viene estratto automaticamente dal campo Summary del ticket Jira:
+- `[Issue_487]: Device 1:1:2:16:25:DIGIL_SR2_0201 Misure parziali` → `1:1:2:16:25:DIGIL_SR2_0201`
+- `[Issue_422]: 1:1:2:16:22:DIGIL_MRN_0332 Disconnesso` → `1:1:2:16:22:DIGIL_MRN_0332`
+
+Il fornitore è derivato automaticamente: `DIGIL_IND` → INDRA, `DIGIL_MRN` → MII, `DIGIL_SR2` → SIRTI.
+
+### Correlazione con Excel Monitoring
+
+Quando sia i ticket Jira che il foglio Excel di monitoring sono importati, il tool correla automaticamente:
+- **Risoluzione attuata**: dalla colonna del foglio Excel (se assente, cella gialla)
+- **Macro-area Causa Problema**: dalla nuova colonna del foglio Excel (se assente, cella gialla)
+
+### Timing (SLA)
+
+Per ogni ticket viene calcolato il tempo trascorso dall'ultimo evento (apertura o aggiornamento), escludendo i weekend:
+- 🟢 **Verde**: meno di 24h lavorative
+- 🟠 **Arancione**: tra 24h e 48h lavorative
+- 🔴 **Rosso**: più di 48h lavorative
+
+### Mappatura Stati Jira → Overview
+
+| Stato Jira | Stato Overview |
+|------------|---------------|
+| Aperto | Aperto |
+| Work In Progress | Aperto |
+| Selected For Evaluation | Aperto |
+| Chiusa | Chiuso |
+| Discarded | Chiuso |
+| Suspended | Sospeso |
+
+### Tabella Overview Ticket
+
+Nella tab Overview, la tabella "Ticket Jira per Fornitore e Stato" mostra i ticket aggregati per:
+- **Lotto1-IndraOlivetti** (INDRA)
+- **Lotto2-TelebitMarini** (MII)
+- **Lotto3-Sirti** (SIRTI)
+- **Totale complessivo**
+
+Con le 4 colonne: Aperto, Chiuso, Interno, Sospeso.
+
+### Dettaglio Ticket (doppio click)
+
+- Summary, DeviceID, Data Apertura, Reporter, Assignee
+- Priority, Resolution, Labels, Fornitore
+- **Macro-area Causa Problema** (dal foglio Excel monitoring)
+- Descrizione (espandibile se lunga)
+- Storico Ticket (Issue Links)
+- Commenti
+- Bottone **Vedi su Jira** (apre il browser)
 
 ---
 
@@ -229,6 +308,7 @@ digil-monitoring-pyqt/
 ├── database.py       # Schema SQLAlchemy + TicketHistory
 ├── importer.py       # ETL: Excel → DB (4 stati availability)
 ├── detection.py      # 9 regole alert (incluso NO_DATA)
+├── jira_client.py    # Client Jira: download API + import Excel + correlazione
 ├── requirements.txt
 ├── data/
 │   └── digil_monitoring.db
@@ -247,3 +327,5 @@ digil-monitoring-pyqt/
 - Alert rigenerati ad ogni import; acknowledged preservati
 - Trend su ultimi 7 giorni; giorni = streak consecutiva nello stato attuale
 - Storico ticket persistente con first_seen/last_seen
+- Ticket Jira scaricati automaticamente all'avvio (se credenziali presenti) e ogni ora
+- Colonna "Macro-area Causa Problema" correlata dal foglio Excel monitoring al DeviceID
