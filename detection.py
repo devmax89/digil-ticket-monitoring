@@ -8,10 +8,37 @@ from datetime import date
 from database import get_session, Device, AvailabilityDaily, AnomalyEvent
 
 ACTIVE_TICKET_STATI = {"Aperto", "Interno"}
+# Stati Jira che contano come "attivi"
+ACTIVE_JIRA_STATI = {"Aperto", "Work In Progress", "Selected For Evaluation"}
 
 def _has_active_ticket(device) -> bool:
-    if not device.ticket_id: return False
-    return device.ticket_stato in ACTIVE_TICKET_STATI
+    """Verifica se il device ha un ticket attivo.
+    Controlla sia il campo ticket_stato dal foglio Excel,
+    sia i ticket Jira nel DB locale (per evitare falsi KO_NO_TICKET).
+    """
+    if device.ticket_id and device.ticket_stato:
+        stato = device.ticket_stato.strip()
+        if any(stato.lower() == s.lower() for s in ACTIVE_TICKET_STATI):
+            return True
+    return False
+
+
+def _has_active_ticket_or_jira(device, session) -> bool:
+    """Come _has_active_ticket ma controlla anche il DB Jira."""
+    if _has_active_ticket(device):
+        return True
+    # Controlla se esiste un ticket Jira aperto per questo device
+    try:
+        from jira_client import JiraTicket
+        jira_ticket = session.query(JiraTicket).filter(
+            JiraTicket.device_id == device.device_id,
+            JiraTicket.status.in_(ACTIVE_JIRA_STATI)
+        ).first()
+        if jira_ticket:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 class AlertGenerator:
@@ -82,7 +109,7 @@ class AlertGenerator:
             if av[i]["norm"] == "KO": ko_days += 1
             else: break
         if ko_days < 3: return
-        if _has_active_ticket(d): return
+        if _has_active_ticket_or_jira(d, s): return
         sev = "CRITICAL" if ko_days >= 7 else "HIGH"
         ticket_note = ""
         if d.ticket_id and d.ticket_stato:
@@ -106,7 +133,7 @@ class AlertGenerator:
         self._add(s, d, "OPEN_TICKET_OK", "LOW", f"OK da {ok_days} giorni ma ticket {d.ticket_id} ancora aperto")
 
     def _rule_connectivity_lost(self, s, d):
-        if d.check_lte != "KO" or d.check_ssh != "KO" or _has_active_ticket(d): return
+        if d.check_lte != "KO" or d.check_ssh != "KO" or _has_active_ticket_or_jira(d, s): return
         self._add(s, d, "CONNECTIVITY_LOST", "HIGH",
                   f"Disconnesso (LTE=KO, SSH=KO, Mongo={d.check_mongo or '?'}) — Nessun ticket attivo")
 
@@ -128,8 +155,7 @@ class AlertGenerator:
         if not av: return
         last_raw = (av[-1].get("raw", "") or "").upper()
         if last_raw != "NO DATA": return
-        if _has_active_ticket(d): return
-        # Conta giorni consecutivi di NO DATA per la severity
+        if _has_active_ticket_or_jira(d, s): return
         nd_days = 0
         for i in range(len(av)-1, -1, -1):
             raw = (av[i].get("raw", "") or "").upper()

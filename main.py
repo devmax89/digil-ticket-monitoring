@@ -464,6 +464,7 @@ class MainWindow(QMainWindow):
         tw = QWidget(); tvl = QVBoxLayout(tw); tvl.setContentsMargins(10,0,0,0); tvl.setSpacing(0)
         tvl.addWidget(QLabel("DIGIL Monitoring Dashboard")); tvl.addWidget(QLabel("Monitoraggio IoT - Terna S.p.A."))
         hdr.addWidget(tw); hdr.addStretch()
+        self.export_jira_btn = QPushButton("Esporta Dettaglio Jira"); self.export_jira_btn.setObjectName("jira"); self.export_jira_btn.clicked.connect(self._export_jira_detail); hdr.addWidget(self.export_jira_btn)
         self.import_btn = QPushButton("Importa Excel"); self.import_btn.setObjectName("secondary"); self.import_btn.clicked.connect(self.do_import); hdr.addWidget(self.import_btn)
         ml.addLayout(hdr)
         sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setStyleSheet("background:#CCCCCC;max-height:1px;"); ml.addWidget(sep)
@@ -600,9 +601,6 @@ class MainWindow(QMainWindow):
         gc = QGroupBox("Correlazione Diagnostica"); gcl = QVBoxLayout(); gcl.addWidget(self.ov_corr_table); gc.setLayout(gcl); ccl.addWidget(gc)
         self.ov_ticket_table = QTableWidget(); self.ov_ticket_table.setColumnCount(3); self.ov_ticket_table.setHorizontalHeaderLabels(["Stato Ticket","Conteggio","% sul totale"]); self.ov_ticket_table.horizontalHeader().setStretchLastSection(True)
         gtk = QGroupBox("Riepilogo Ticket per Stato (da Excel)"); tkl = QVBoxLayout(); tkl.addWidget(self.ov_ticket_table); gtk.setLayout(tkl); ccl.addWidget(gtk)
-        # Tabella Jira ticket per fornitore/stato
-        self.ov_jira_table = QTableWidget(); self.ov_jira_table.horizontalHeader().setStretchLastSection(True)
-        gjt = QGroupBox("Ticket Jira per Fornitore e Stato"); jfl = QVBoxLayout(); jfl.addWidget(self.ov_jira_table); gjt.setLayout(jfl); ccl.addWidget(gjt)
         ccl.addStretch(); scroll.setWidget(content); layout.addWidget(scroll); return tab
 
     def _create_ticket_tab(self):
@@ -856,32 +854,6 @@ class MainWindow(QMainWindow):
                 self.ov_ticket_table.setItem(i, 1, colored_item(cnt, bold=True))
                 self.ov_ticket_table.setItem(i, 2, colored_item(f"{pct}%"))
             self.ov_ticket_table.resizeRowsToContents()
-            # Jira ticket per fornitore/stato (4 stati mappati)
-            try:
-                jira_data, target_stati = get_ticket_overview_by_fornitore()
-                fornitore_order = ["INDRA","MII","SIRTI"]
-                cols = ["Fornitore"] + target_stati + ["Totale complessivo"]
-                self.ov_jira_table.setColumnCount(len(cols)); self.ov_jira_table.setHorizontalHeaderLabels(cols)
-                self.ov_jira_table.setRowCount(len(fornitore_order) + 1)
-                totals = {s: 0 for s in target_stati}; grand = 0
-                for i, f in enumerate(fornitore_order):
-                    display = FORNITORE_DISPLAY.get(f, f)
-                    self.ov_jira_table.setItem(i, 0, colored_item(display, bold=True))
-                    row_total = 0
-                    for j, s in enumerate(target_stati):
-                        cnt = jira_data.get(f, {}).get(s, 0)
-                        bg = "#FFEBEE" if s=="Aperto" else "#E8F5E9" if s=="Chiuso" else "#FFF3E0" if s=="Interno" else "#E3F2FD"
-                        self.ov_jira_table.setItem(i, j+1, colored_item(cnt if cnt else "", bg))
-                        totals[s] += cnt; row_total += cnt
-                    self.ov_jira_table.setItem(i, len(target_stati)+1, colored_item(row_total, bold=True)); grand += row_total
-                tr = len(fornitore_order)
-                self.ov_jira_table.setItem(tr, 0, colored_item("Totale complessivo", bold=True))
-                for j, s in enumerate(target_stati):
-                    self.ov_jira_table.setItem(tr, j+1, colored_item(totals[s], bold=True))
-                self.ov_jira_table.setItem(tr, len(target_stati)+1, colored_item(grand, bold=True))
-                self.ov_jira_table.resizeColumnsToContents(); self.ov_jira_table.resizeRowsToContents()
-            except Exception:
-                pass
         finally: session.close()
 
     def _refresh_jira_cards(self):
@@ -920,6 +892,71 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Import", f"Dispositivi: {stats['devices_imported']}\nAvailability: {stats['availability_records']}\nTicket nuovi: {stats.get('tickets_new',0)}\nTicket aggiornati: {stats.get('tickets_updated',0)}\nAlert: {ac}")
     def _on_import_error(self, error):
         self.import_btn.setEnabled(True); self.status_label.setText(f"Errore: {error}"); QMessageBox.critical(self, "Errore", error)
+    def _export_jira_detail(self):
+        """Esporta dettaglio statistiche Jira in Excel con le stesse info delle cards."""
+        import pandas as pd
+        fp, _ = QFileDialog.getSaveFileName(self, "Salva Dettaglio Jira",
+            str(Path.home()/"Downloads"/f"DIGIL_Jira_Dettaglio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"), "Excel (*.xlsx)")
+        if not fp: return
+        try:
+            js = get_jira_stats()
+            # Sheet 1: Riepilogo (le cards)
+            riepilogo = [
+                {"Periodo": "Totale", "Aperti": js["aperti"], "Chiusi": js["total"] - js["aperti"], "Totale": js["total"]},
+                {"Periodo": "Ultime 24h", "Aperti": js["aperti_24h"], "Chiusi": js["chiusi_24h"], "Totale": js["aperti_24h"] + js["chiusi_24h"]},
+                {"Periodo": "Ultimi 7 giorni", "Aperti": js["aperti_7d"], "Chiusi": js["chiusi_7d"], "Totale": js["aperti_7d"] + js["chiusi_7d"]},
+                {"Periodo": "Mese corrente", "Aperti": js["aperti_mese"], "Chiusi": js["chiusi_mese"], "Totale": js["aperti_mese"] + js["chiusi_mese"]},
+            ]
+            # Sheet 2: Ticket per fornitore/stato
+            from jira_client import get_ticket_overview_by_fornitore
+            jira_data, target_stati = get_ticket_overview_by_fornitore()
+            forn_rows = []
+            for f in ["INDRA", "MII", "SIRTI"]:
+                row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
+                row_total = 0
+                for s in target_stati:
+                    cnt = jira_data.get(f, {}).get(s, 0)
+                    row[s] = cnt; row_total += cnt
+                row["Totale"] = row_total
+                forn_rows.append(row)
+            # Riga totale
+            tot_row = {"Fornitore": "Totale complessivo"}
+            grand = 0
+            for s in target_stati:
+                tot_row[s] = sum(r.get(s, 0) for r in forn_rows); grand += tot_row[s]
+            tot_row["Totale"] = grand
+            forn_rows.append(tot_row)
+            # Sheet 3: Tutti i ticket
+            all_tickets = get_ticket_data()
+            ticket_rows = []
+            for t in all_tickets:
+                ticket_rows.append({
+                    "Ticket": t["key"], "DeviceID": t["device_id"], "Fornitore": t["fornitore"],
+                    "Stato": t["status"], "Priority": t["priority"], "Labels": t["labels"],
+                    "Reporter": t["reporter"], "Assignee": t["assignee"],
+                    "Risoluzione": t["risoluzione"], "Macro-area": t["macro_area"],
+                    "Data Apertura": t["created"].strftime("%Y-%m-%d") if t["created"] else "",
+                    "Ultimo Aggiornamento": t["updated"].strftime("%Y-%m-%d") if t["updated"] else "",
+                    "Timing (ore)": t["timing_hours"], "SLA": t["timing_color"],
+                })
+            with pd.ExcelWriter(fp, engine='xlsxwriter') as w:
+                pd.DataFrame(riepilogo).to_excel(w, index=False, sheet_name='Riepilogo')
+                pd.DataFrame(forn_rows).to_excel(w, index=False, sheet_name='Per Fornitore')
+                pd.DataFrame(ticket_rows).to_excel(w, index=False, sheet_name='Tutti i Ticket')
+                # Formattazione
+                wb = w.book
+                for sheet_name in ['Riepilogo', 'Per Fornitore', 'Tutti i Ticket']:
+                    ws = w.sheets[sheet_name]
+                    ws.set_column('A:A', 22)
+                    if sheet_name == 'Tutti i Ticket':
+                        ws.set_column('A:A', 12); ws.set_column('B:B', 35); ws.set_column('C:C', 12)
+                        ws.set_column('D:D', 18); ws.set_column('E:E', 10); ws.set_column('F:F', 25)
+                        ws.set_column('G:G', 20); ws.set_column('H:H', 20)
+            self.status_label.setText(f"Esportato: {fp}")
+            QMessageBox.information(self, "Export Jira", f"Dettaglio Jira salvato:\n{fp}")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", str(e))
+
     def export_overview(self):
         import pandas as pd
         fp, _ = QFileDialog.getSaveFileName(self, "Salva Overview", str(Path.home()/"Downloads"/f"DIGIL_Overview_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"), "Excel (*.xlsx)")
