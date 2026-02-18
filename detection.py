@@ -65,6 +65,7 @@ class AlertGenerator:
                 self._rule_door_alarm(session, device)
                 self._rule_battery_alarm(session, device)
                 self._rule_no_data(session, device, avail)
+                self._rule_no_data_l3(session, device)
             session.commit()
             return self.count
         finally: session.close()
@@ -164,6 +165,38 @@ class AlertGenerator:
         sev = "HIGH" if nd_days >= 5 else "MEDIUM"
         self._add(s, d, "NO_DATA", sev,
                   f"NO DATA da {nd_days} giorn{'o' if nd_days==1 else 'i'} — il dispositivo non comunica misure")
+
+    def _rule_no_data_l3(self, s, d):
+        """NO_DATA_L3: confronta data Onesait con data MongoDB.
+        Se la data Onesait è più recente di quella MongoDB, i dati si fermano
+        sulla piattaforma centrale e non arrivano al DB → problema pipeline.
+        Ignora date nulle e date fittizie (es. 1900-01-01 da Excel).
+        """
+        if not d.data_onesait: return
+        # Ignora date fittizie (Excel default 1900-01-01)
+        if d.data_onesait.year < 2020: return
+        # Se non abbiamo data mongo, ma Onesait è recente, è problematico
+        # Usa last_avail_date come fallback per la data MongoDB
+        data_mongo = d.data_mongo or d.last_avail_date
+        if data_mongo and data_mongo.year < 2020:
+            data_mongo = None
+        if data_mongo is None:
+            # Nessun dato MongoDB ma Onesait presente → problema
+            if _has_active_ticket_or_jira(d, s): return
+            self._add(s, d, "NO_DATA_L3", "HIGH",
+                      f"Dati fermi su Onesait ({d.data_onesait}) — Nessun dato MongoDB",
+                      {"onesait": str(d.data_onesait), "mongo": "N/A"})
+            return
+        if d.data_onesait <= data_mongo:
+            return  # Tutto ok: MongoDB è aggiornato come Onesait o più recente
+        # Onesait più recente di MongoDB → possibile blocco pipeline
+        delta = (d.data_onesait - data_mongo).days
+        if delta <= 1: return  # Delta 1gg è fisiologico (availability = 24h precedenti)
+        if _has_active_ticket_or_jira(d, s): return
+        sev = "CRITICAL" if delta >= 5 else "HIGH" if delta >= 3 else "MEDIUM"
+        self._add(s, d, "NO_DATA_L3", sev,
+                  f"Dati fermi su Onesait — Onesait:{d.data_onesait} vs Mongo:{data_mongo} (delta {delta}gg)",
+                  {"onesait": str(d.data_onesait), "mongo": str(data_mongo), "delta_days": delta})
 
 
 def run_detection(target_date=None) -> int:

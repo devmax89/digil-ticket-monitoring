@@ -163,6 +163,19 @@ class ExcelImporter:
             device.batteria = safe_str(row.get("Batteria"))
             device.porta_aperta = safe_str(row.get("Porta aperta"))
             device.check_mongo = safe_str(row.get("Check Mongo"))
+            # Data Onesait: la colonna contiene date (ultimo dato sulla piattaforma Onesait)
+            device.data_onesait = safe_date(row.get("Onesait"))
+            # Data Mongo: cerchiamo colonna specifica, oppure usiamo "Check Mongo" se è una data
+            dm = safe_date(row.get("Data Mongo")) or safe_date(row.get("Check Mongo Date"))
+            if dm is None:
+                # Prova a interpretare "Check Mongo" come data (potrebbe essere OK/KO o una data)
+                raw_mongo = row.get("Check Mongo")
+                if raw_mongo is not None and not pd.isna(raw_mongo):
+                    if isinstance(raw_mongo, (datetime, date)):
+                        dm = raw_mongo if isinstance(raw_mongo, date) else raw_mongo.date()
+                    elif str(raw_mongo).strip().upper() not in ("OK", "KO", "-", "", "NAN"):
+                        dm = safe_date(raw_mongo)
+            device.data_mongo = dm
             device.tipo_malfunzionamento = safe_str(row.get("Tipo Malfunzionamento - Effetto")) or safe_str(row.get("Tipo Malfunzionamento"))
             device.dettagli_malfunzionamento = safe_str(row.get("Eventuali Dettagli Malfunzionamento"))
             device.cluster_analisi = safe_str(row.get("Cluster Analisi"))

@@ -288,6 +288,25 @@ class DeviceDetailDialog(QDialog):
                 bx.setStyleSheet(f"background:{bg};border:1px solid #CCC;border-radius:4px;padding:6px;min-width:60px;"); dl.addWidget(bx)
             dl.addWidget(QLabel(f"<b>Trend 7d:</b> {trend_str(device.trend_7d)}")); dl.addWidget(QLabel(f"<b>Giorni:</b> {device.days_in_current}")); dl.addStretch()
             gd = QGroupBox("Diagnostica"); gd.setLayout(dl); cl.addWidget(gd)
+            # Onesait vs MongoDB date comparison
+            if device.data_onesait or device.data_mongo:
+                pl = QHBoxLayout()
+                one_str = str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-"
+                mongo_str = str(device.data_mongo) if device.data_mongo and device.data_mongo.year >= 2020 else "-"
+                # Colora in rosso se Onesait > MongoDB (pipeline bloccata)
+                pipeline_ko = (device.data_onesait and device.data_mongo and
+                              device.data_onesait.year >= 2020 and device.data_mongo.year >= 2020 and
+                              device.data_onesait > device.data_mongo)
+                obg = "#FFEBEE" if pipeline_ko else "#E8F5E9" if one_str != "-" else "#F5F5F5"
+                mbg = "#FFEBEE" if pipeline_ko else "#E8F5E9" if mongo_str != "-" else "#F5F5F5"
+                pl.addWidget(QLabel(f"<center><small>Onesait</small><br><b>{one_str}</b></center>").setStyleSheet(f"background:{obg};border:1px solid #CCC;border-radius:4px;padding:6px;min-width:80px;") or QLabel(f"<center><small>Onesait</small><br><b>{one_str}</b></center>"))
+                pl.addWidget(QLabel(f"<center><small>MongoDB</small><br><b>{mongo_str}</b></center>").setStyleSheet(f"background:{mbg};border:1px solid #CCC;border-radius:4px;padding:6px;min-width:80px;") or QLabel(f"<center><small>MongoDB</small><br><b>{mongo_str}</b></center>"))
+                if pipeline_ko:
+                    delta = (device.data_onesait - device.data_mongo).days
+                    wl = QLabel(f"<b style='color:#C62828'>⚠ Pipeline bloccata ({delta}gg)</b>")
+                    pl.addWidget(wl)
+                pl.addStretch()
+                gpl = QGroupBox("Pipeline Dati"); gpl.setLayout(pl); cl.addWidget(gpl)
             if device.last_avail_status:
                 av_bg = avail_color(device.last_avail_status)
                 cl.addWidget(QLabel(f"<b>Ultimo availability:</b> {device.last_avail_status} ({device.last_avail_date})").setStyleSheet(f"padding:4px 8px;border-left:4px solid {av_bg};background:#FAFAFA;") or QLabel(f"<b>Ultimo availability:</b> {device.last_avail_status} ({device.last_avail_date})"))
@@ -346,7 +365,7 @@ class DeviceDetailDialog(QDialog):
         finally: session.close()
 
     def _copy_info(self, device, session):
-        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"LTE: {device.check_lte}",f"SSH: {device.check_ssh}",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}","","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
+        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"LTE: {device.check_lte}",f"SSH: {device.check_ssh}",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}","","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
         if device.tipo_malfunzionamento: lines += ["","--- Malfunzionamento ---",f"Tipo: {device.tipo_malfunzionamento}",f"Cluster: {device.cluster_analisi or '-'}",f"Analisi: {device.analisi_malfunzionamento or '-'}",f"Cause: {device.cause_anomalie or '-'}",f"Note: {device.note or '-'}"]
         hist = session.query(TicketHistory).filter(TicketHistory.device_id==device.device_id).order_by(TicketHistory.first_seen.desc()).all()
         if hist:
@@ -518,11 +537,11 @@ class MainWindow(QMainWindow):
         flt.addStretch(); self.alert_count_label = QLabel(""); self.alert_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.alert_count_label)
         jb = QPushButton("Jira Selezionati"); jb.setObjectName("jira"); jb.clicked.connect(self._jira_from_alerts); flt.addWidget(jb)
         cb = QPushButton("Pulisci Filtri"); cb.setObjectName("secondary"); cb.clicked.connect(self._clear_alert_filters); flt.addWidget(cb); layout.addLayout(flt)
-        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Descrizione","Ticket"]
+        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Onesait","Descrizione","Ticket"]
         self.alert_table = FilterableTable(cols)
-        self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,180); self.alert_table.table.setColumnWidth(2,100); self.alert_table.table.setColumnWidth(3,60); self.alert_table.table.setColumnWidth(4,55); self.alert_table.table.setColumnWidth(5,60)
+        self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,130); self.alert_table.table.setColumnWidth(2,100); self.alert_table.table.setColumnWidth(3,60); self.alert_table.table.setColumnWidth(4,55); self.alert_table.table.setColumnWidth(5,60)
         for i in range(6,11): self.alert_table.table.setColumnWidth(i,45)
-        self.alert_table.table.setColumnWidth(11,50); self.alert_table.table.setColumnWidth(12,300)
+        self.alert_table.table.setColumnWidth(11,50); self.alert_table.table.setColumnWidth(12,80); self.alert_table.table.setColumnWidth(13,280)
         self.alert_table.table.doubleClicked.connect(self._on_alert_dblclick); layout.addWidget(self.alert_table); return tab
 
     def _toggle_alert_nt(self):
@@ -769,13 +788,14 @@ class MainWindow(QMainWindow):
             data = []
             for event, device in q.all():
                 sdid = ":".join(device.device_id.split(":")[-2:]) if ":" in device.device_id else device.device_id
-                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":sdid,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
+                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":sdid,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
                 elif col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col in ("LTE","SSH","Mongo","Batt","Porta"): return check_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
+                elif col == "Onesait" and val != "-": return colored_item(val, "#FFF3E0", "#E65100")
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
                 elif col == "Ticket" and val != "-": return colored_item(val, "#FFEBEE", "#C62828")
                 return QTableWidgetItem(str(val))

@@ -52,6 +52,8 @@ class Device(Base):
     batteria = Column(String)
     porta_aperta = Column(String)
     check_mongo = Column(String)
+    data_onesait = Column(Date)
+    data_mongo = Column(Date)
     last_avail_status = Column(String)
     last_avail_norm = Column(String)
     last_avail_date = Column(Date)
