@@ -69,6 +69,17 @@ class JiraTicket(Base):
     num_comments = Column(Integer, default=0)
     issue_links = Column(Text)
     url = Column(String)
+    # Nuovi campi custom Jira
+    assignee_level = Column(String)                  # L3, L4, etc.
+    vendor = Column(String)
+    info_l1 = Column(Text)
+    info_l2 = Column(Text)
+    info_l3 = Column(Text)
+    info_l4 = Column(Text)
+    status_l1 = Column(String)
+    status_l2 = Column(String)
+    status_l3 = Column(String)
+    status_l4 = Column(String)
     # Campi derivati
     device_id = Column(String)                       # Estratto da Summary
     fornitore = Column(String)                       # INDRA/MII/SIRTI
@@ -79,6 +90,7 @@ class JiraTicket(Base):
     __table_args__ = (
         Index("idx_jt_status", "status"),
         Index("idx_jt_device", "device_id"),
+        Index("idx_jt_level", "assignee_level"),
     )
 
 
@@ -171,6 +183,66 @@ def compute_timing_hours(created_str, updated_str):
 
 
 # ============================================================
+# CUSTOM FIELDS HELPER
+# ============================================================
+# Nomi dei campi custom da cercare su Jira
+CUSTOM_FIELD_NAMES = [
+    "Assignee Level", "Vendor",
+    "Info L1", "Info L2", "Info L3", "Info L4",
+    "Status L1", "Status L2", "Status L3", "Status L4",
+]
+
+_custom_field_cache = {}
+
+def _discover_custom_fields(jira) -> dict:
+    """Scopre automaticamente gli ID dei custom fields da Jira.
+    Ritorna un dict {nome_campo: customfield_XXXXX}.
+    Risultati cachati per la sessione."""
+    global _custom_field_cache
+    if _custom_field_cache:
+        return _custom_field_cache
+    try:
+        all_fields = jira.fields()
+        name_to_id = {}
+        for field in all_fields:
+            name = field.get("name", "")
+            fid = field.get("id", "")
+            if name in CUSTOM_FIELD_NAMES:
+                name_to_id[name] = fid
+        _custom_field_cache = name_to_id
+        if name_to_id:
+            print(f"[Jira] Custom fields trovati: {', '.join(f'{k}={v}' for k,v in name_to_id.items())}")
+        return name_to_id
+    except Exception as e:
+        print(f"[Jira] Errore discovery custom fields: {e}")
+        return {}
+
+
+def _get_custom_field(fields, field_map: dict, field_name: str) -> str:
+    """Estrae il valore di un custom field dall'issue.
+    Gestisce sia valori stringa che oggetti con .value o .name."""
+    fid = field_map.get(field_name)
+    if not fid:
+        return ""
+    try:
+        val = getattr(fields, fid, None)
+        if val is None:
+            return ""
+        # Jira custom fields possono essere: stringa, dict con value, oggetto con .value/.name
+        if isinstance(val, str):
+            return val.strip()
+        if isinstance(val, dict):
+            return str(val.get("value", val.get("name", ""))).strip()
+        if hasattr(val, 'value'):
+            return str(val.value).strip()
+        if hasattr(val, 'name'):
+            return str(val.name).strip()
+        return str(val).strip()
+    except Exception:
+        return ""
+
+
+# ============================================================
 # DOWNLOAD DA JIRA API
 # ============================================================
 def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlassian.net", project="IA20"):
@@ -187,6 +259,9 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
         jira = JIRA(server=jira_url, basic_auth=(email, token))
     except Exception as e:
         return False, f"Connessione fallita: {e}"
+
+    # Auto-discover custom field IDs
+    custom_field_map = _discover_custom_fields(jira)
 
     jql = f'project = {project} AND type = "Bug in esercizio" ORDER BY created DESC'
     try:
@@ -252,6 +327,18 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             ticket.device_id = device_id
             ticket.fornitore = fornitore
 
+            # Custom fields
+            ticket.assignee_level = _get_custom_field(f, custom_field_map, "Assignee Level")
+            ticket.vendor = _get_custom_field(f, custom_field_map, "Vendor")
+            ticket.info_l1 = _get_custom_field(f, custom_field_map, "Info L1")
+            ticket.info_l2 = _get_custom_field(f, custom_field_map, "Info L2")
+            ticket.info_l3 = _get_custom_field(f, custom_field_map, "Info L3")
+            ticket.info_l4 = _get_custom_field(f, custom_field_map, "Info L4")
+            ticket.status_l1 = _get_custom_field(f, custom_field_map, "Status L1")
+            ticket.status_l2 = _get_custom_field(f, custom_field_map, "Status L2")
+            ticket.status_l3 = _get_custom_field(f, custom_field_map, "Status L3")
+            ticket.status_l4 = _get_custom_field(f, custom_field_map, "Status L4")
+
             try:
                 ticket.created = datetime.fromisoformat(f.created[:19]) if f.created else None
             except Exception:
@@ -281,11 +368,32 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
 
 
 def import_from_excel(file_path: str):
-    """Importa ticket da un file Excel esportato dallo script scaricaTicketJira.py"""
+    """Importa ticket da un file Excel o CSV esportato da Jira."""
     import pandas as pd
-    df = pd.read_excel(file_path, sheet_name="All Tickets")
-    # Filtra solo Bug in esercizio
-    df = df[df["Type"] == "Bug in esercizio"].copy()
+    fp = str(file_path)
+    if fp.lower().endswith('.csv'):
+        # CSV export diretto da Jira (colonne in italiano)
+        df = pd.read_csv(fp, encoding='utf-8')
+        # Mappa colonne italiane → inglesi
+        col_map = {
+            "Riepilogo": "Summary", "Chiave di ticket": "Key", "Tipo ticket": "Type",
+            "Stato": "Status", "Priorità": "Priority", "PrioritÃ\xa0": "Priority",
+            "Risoluzione": "Resolution",
+            "Assegnatario": "Assignee", "Richiedente": "Reporter",
+            "Creati": "Created", "Aggiornato": "Updated", "Data di scadenza": "Due Date",
+            "Descrizione": "Description", "Etichette": "Labels",
+        }
+        df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
+        # Tipo ticket: filtra solo Bug in esercizio
+        if "Type" in df.columns:
+            df = df[df["Type"] == "Bug in esercizio"].copy()
+    else:
+        try:
+            df = pd.read_excel(fp, sheet_name="All Tickets")
+        except Exception:
+            df = pd.read_excel(fp, sheet_name=0)
+        if "Type" in df.columns:
+            df = df[df["Type"] == "Bug in esercizio"].copy()
 
     init_jira_db()
     session = SessionLocal()
@@ -319,6 +427,26 @@ def import_from_excel(file_path: str):
             ticket.issue_links = str(row.get("Issue Links", "")) if not pd.isna(row.get("Issue Links")) else ""
             ticket.device_id = device_id
             ticket.fornitore = fornitore
+
+            # Custom fields (se presenti nel file Excel)
+            # Supporta sia nomi diretti che formato CSV Jira "Campo personalizzato (Nome)"
+            def _safe_excel(col, alt_col=None):
+                v = row.get(col)
+                if (v is None or (isinstance(v, float) and pd.isna(v))) and alt_col:
+                    v = row.get(alt_col)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return ""
+                return str(v).strip()
+            ticket.assignee_level = _safe_excel("Assignee Level", "Campo personalizzato (Assignee Level)")
+            ticket.vendor = _safe_excel("Vendor", "Campo personalizzato (Vendor)")
+            ticket.info_l1 = _safe_excel("Info L1", "Campo personalizzato (Info L1)")
+            ticket.info_l2 = _safe_excel("Info L2", "Campo personalizzato (Info L2)")
+            ticket.info_l3 = _safe_excel("Info L3", "Campo personalizzato (Info L3)")
+            ticket.info_l4 = _safe_excel("Info L4", "Campo personalizzato (Info L4)")
+            ticket.status_l1 = _safe_excel("Status L1", "Campo personalizzato (Status L1)")
+            ticket.status_l2 = _safe_excel("Status L2", "Campo personalizzato (Status L2)")
+            ticket.status_l3 = _safe_excel("Status L3", "Campo personalizzato (Status L3)")
+            ticket.status_l4 = _safe_excel("Status L4", "Campo personalizzato (Status L4)")
 
             try:
                 c = str(row.get("Created", ""))
@@ -399,6 +527,7 @@ def get_ticket_data(filters=None):
                 "description": t.description or "",
                 "reporter": t.reporter or "",
                 "assignee": t.assignee or "",
+                "assignee_level": t.assignee_level or "",
                 "resolution": t.resolution or "",
                 "priority": t.priority or "",
                 "macro_area": t.macro_area or "",
@@ -414,12 +543,14 @@ def get_ticket_data(filters=None):
 
 
 def get_ticket_overview_by_fornitore():
-    """Ritorna dati per tabella overview: ticket per fornitore e stato (4 stati mappati)."""
+    """Ritorna dati per tabella overview: ticket per fornitore con Aperto L3/L4."""
     session = SessionLocal()
     try:
         tickets = session.query(JiraTicket).all()
-        target_stati = ["Aperto", "Chiuso", "Interno", "Sospeso"]
+        target_stati = ["Aperto L3", "Aperto L4", "Chiuso", "Sospeso"]
         fornitore_order = ["INDRA", "MII", "SIRTI"]
+        # Stati Jira considerati "aperti" (non chiusi/scartati)
+        stati_aperti = {"Aperto", "Work In Progress", "Selected For Evaluation"}
 
         data = {f: {s: 0 for s in target_stati} for f in fornitore_order}
         for t in tickets:
@@ -427,8 +558,18 @@ def get_ticket_overview_by_fornitore():
             if not forn:
                 continue
             mapped = map_jira_status(t.status or "")
-            if mapped in target_stati:
-                data[forn][mapped] += 1
+            if mapped == "Aperto":
+                # Split per Assignee Level
+                level = (t.assignee_level or "").strip().upper()
+                if level == "L4":
+                    data[forn]["Aperto L4"] += 1
+                else:
+                    # Default L3 se livello non specificato o L3
+                    data[forn]["Aperto L3"] += 1
+            elif mapped == "Chiuso":
+                data[forn]["Chiuso"] += 1
+            elif mapped == "Sospeso":
+                data[forn]["Sospeso"] += 1
 
         return data, target_stati
     finally:
@@ -451,48 +592,55 @@ def get_filter_options():
 
 
 def get_jira_stats():
-    """Ritorna statistiche Jira per le cards: aperti/chiusi per periodo."""
+    """Ritorna statistiche Jira per le cards.
+    Card 1: Aperto L3, Aperto L4, Chiuso, Sospeso (totali)
+    Card 2: Settimanale aperti, chiusi, scartati
+    """
     session = SessionLocal()
     try:
         total = session.query(JiraTicket).count()
+        empty = {"total": 0, "aperto_l3": 0, "aperto_l4": 0, "chiuso": 0, "sospeso": 0,
+                 "week_aperti": 0, "week_chiusi": 0, "week_scartati": 0}
         if total == 0:
-            return {"total": 0, "aperti": 0, "chiusi_24h": 0, "chiusi_7d": 0, "chiusi_mese": 0,
-                    "aperti_24h": 0, "aperti_7d": 0, "aperti_mese": 0}
+            return empty
 
         now = datetime.now()
-        # Totale aperti (non Chiusa/Discarded)
-        aperti = session.query(JiraTicket).filter(
-            ~JiraTicket.status.in_(["Chiusa", "Discarded"])).count()
+        stati_chiusi = ["Chiusa", "Discarded"]
+        stati_sospesi = ["Suspended"]
 
-        # 24h
-        h24 = now - timedelta(hours=24)
-        chiusi_24h = session.query(JiraTicket).filter(
-            JiraTicket.status.in_(["Chiusa", "Discarded"]),
-            JiraTicket.updated >= h24).count()
-        aperti_24h = session.query(JiraTicket).filter(
-            ~JiraTicket.status.in_(["Chiusa", "Discarded"]),
-            JiraTicket.created >= h24).count()
+        # Totali: Aperto L3, Aperto L4, Chiuso, Sospeso
+        all_tickets = session.query(JiraTicket).all()
+        aperto_l3 = 0; aperto_l4 = 0; chiuso = 0; sospeso = 0
+        for t in all_tickets:
+            mapped = map_jira_status(t.status or "")
+            if mapped == "Aperto":
+                level = (t.assignee_level or "").strip().upper()
+                if level == "L4":
+                    aperto_l4 += 1
+                else:
+                    aperto_l3 += 1
+            elif mapped == "Chiuso":
+                chiuso += 1
+            elif mapped == "Sospeso":
+                sospeso += 1
 
-        # 7 giorni
+        # Settimanale (ultimi 7 giorni)
         d7 = now - timedelta(days=7)
-        chiusi_7d = session.query(JiraTicket).filter(
-            JiraTicket.status.in_(["Chiusa", "Discarded"]),
-            JiraTicket.updated >= d7).count()
-        aperti_7d = session.query(JiraTicket).filter(
-            ~JiraTicket.status.in_(["Chiusa", "Discarded"]),
+        # Aperti questa settimana (creati negli ultimi 7gg, non chiusi)
+        week_aperti = session.query(JiraTicket).filter(
+            ~JiraTicket.status.in_(stati_chiusi),
             JiraTicket.created >= d7).count()
+        # Chiusi questa settimana (status Chiusa, updated negli ultimi 7gg)
+        week_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.status == "Chiusa",
+            JiraTicket.updated >= d7).count()
+        # Scartati questa settimana (status Discarded, updated negli ultimi 7gg)
+        week_scartati = session.query(JiraTicket).filter(
+            JiraTicket.status == "Discarded",
+            JiraTicket.updated >= d7).count()
 
-        # Mese corrente
-        inizio_mese = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        chiusi_mese = session.query(JiraTicket).filter(
-            JiraTicket.status.in_(["Chiusa", "Discarded"]),
-            JiraTicket.updated >= inizio_mese).count()
-        aperti_mese = session.query(JiraTicket).filter(
-            ~JiraTicket.status.in_(["Chiusa", "Discarded"]),
-            JiraTicket.created >= inizio_mese).count()
-
-        return {"total": total, "aperti": aperti,
-                "chiusi_24h": chiusi_24h, "chiusi_7d": chiusi_7d, "chiusi_mese": chiusi_mese,
-                "aperti_24h": aperti_24h, "aperti_7d": aperti_7d, "aperti_mese": aperti_mese}
+        return {"total": total, "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
+                "chiuso": chiuso, "sospeso": sospeso,
+                "week_aperti": week_aperti, "week_chiusi": week_chiusi, "week_scartati": week_scartati}
     finally:
         session.close()
