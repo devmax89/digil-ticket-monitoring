@@ -653,8 +653,6 @@ class MainWindow(QMainWindow):
         gdt = QGroupBox("Stato per DT"); dtl = QVBoxLayout(); dtl.addWidget(self.ov_dt_table); gdt.setLayout(dtl); ccl.addWidget(gdt)
         self.ov_corr_table = QTableWidget(); self.ov_corr_table.setColumnCount(8); self.ov_corr_table.setHorizontalHeaderLabels(["Fornitore","Totale","LTE KO","SSH KO","Mongo KO","Porta KO","Batt KO","Disconnessi"]); self.ov_corr_table.horizontalHeader().setStretchLastSection(True)
         gc = QGroupBox("Correlazione Diagnostica"); gcl = QVBoxLayout(); gcl.addWidget(self.ov_corr_table); gc.setLayout(gcl); ccl.addWidget(gc)
-        self.ov_ticket_table = QTableWidget(); self.ov_ticket_table.setColumnCount(3); self.ov_ticket_table.setHorizontalHeaderLabels(["Stato Ticket","Conteggio","% sul totale"]); self.ov_ticket_table.horizontalHeader().setStretchLastSection(True)
-        gtk = QGroupBox("Riepilogo Ticket per Stato (da Excel)"); tkl = QVBoxLayout(); tkl.addWidget(self.ov_ticket_table); gtk.setLayout(tkl); ccl.addWidget(gtk)
         # Tabella Jira ticket per fornitore con L3/L4
         self.ov_jira_table = QTableWidget(); self.ov_jira_table.setColumnCount(6)
         self.ov_jira_table.setHorizontalHeaderLabels(["Fornitore","Aperto L3","Aperto L4","Chiuso","Sospeso","Totale"])
@@ -902,23 +900,6 @@ class MainWindow(QMainWindow):
                 self.ov_corr_table.setItem(i,0,colored_item(f,bold=True)); self.ov_corr_table.setItem(i,1,colored_item(total))
                 self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_lte=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.check_ssh=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,5,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,6,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True)); self.ov_corr_table.setItem(i,7,colored_item(sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO"),"#FFEBEE","#C62828",True))
             self.ov_corr_table.resizeRowsToContents()
-            # Ticket per stato
-            from sqlalchemy import func, case
-            ticket_stati = session.query(Device.ticket_stato, func.count()).group_by(Device.ticket_stato).all()
-            total_dev = session.query(Device).count() or 1
-            stati_map = {}
-            for stato, cnt in ticket_stati:
-                key = stato if stato else "(Nessun ticket)"
-                stati_map[key] = stati_map.get(key, 0) + cnt
-            ordered = sorted(stati_map.items(), key=lambda x: -x[1])
-            self.ov_ticket_table.setRowCount(len(ordered))
-            for i, (stato, cnt) in enumerate(ordered):
-                pct = round(cnt / total_dev * 100, 1)
-                bg = "#FFEBEE" if stato == "Aperto" else "#E8F5E9" if stato in ("Chiuso","Risolto") else "#FFF3E0" if stato == "Interno" else "#F5F5F5"
-                self.ov_ticket_table.setItem(i, 0, colored_item(stato, bg, bold=True))
-                self.ov_ticket_table.setItem(i, 1, colored_item(cnt, bold=True))
-                self.ov_ticket_table.setItem(i, 2, colored_item(f"{pct}%"))
-            self.ov_ticket_table.resizeRowsToContents()
             # Jira ticket per fornitore con L3/L4
             try:
                 jira_data, target_stati = get_ticket_overview_by_fornitore()
@@ -993,6 +974,7 @@ class MainWindow(QMainWindow):
             riepilogo = [
                 {"Periodo": "Totale", "Aperto L3": js["aperto_l3"], "Aperto L4": js["aperto_l4"], "Chiuso": js["chiuso"], "Sospeso": js["sospeso"], "Totale": js["total"]},
                 {"Periodo": "Ultimi 7 giorni", "Aperti": js["week_aperti"], "Chiusi": js["week_chiusi"], "Scartati": js["week_scartati"]},
+                {"Periodo": "Ultimi 30 giorni", "Aperti": js["month_aperti"], "Chiusi": js["month_chiusi"], "Scartati": js["month_scartati"]},
             ]
             # Sheet 2: Ticket per fornitore/stato
             from jira_client import get_ticket_overview_by_fornitore
@@ -1013,10 +995,13 @@ class MainWindow(QMainWindow):
                 tot_row[s] = sum(r.get(s, 0) for r in forn_rows); grand += tot_row[s]
             tot_row["Totale"] = grand
             forn_rows.append(tot_row)
-            # Sheet 3: Tutti i ticket
+            # Sheet 3: Tutti i ticket (con Data Chiusura)
             all_tickets = get_ticket_data()
             ticket_rows = []
             for t in all_tickets:
+                closed_str = ""
+                if t["status"] in ("Chiusa", "Discarded") and t["updated"]:
+                    closed_str = t["updated"].strftime("%Y-%m-%d")
                 ticket_rows.append({
                     "Ticket": t["key"], "DeviceID": t["device_id"], "Fornitore": t["fornitore"],
                     "Stato": t["status"], "Assignee Level": t.get("assignee_level",""),
@@ -1024,6 +1009,7 @@ class MainWindow(QMainWindow):
                     "Reporter": t["reporter"], "Assignee": t["assignee"],
                     "Risoluzione": t["risoluzione"], "Macro-area": t["macro_area"],
                     "Data Apertura": t["created"].strftime("%Y-%m-%d") if t["created"] else "",
+                    "Data Chiusura": closed_str,
                     "Ultimo Aggiornamento": t["updated"].strftime("%Y-%m-%d") if t["updated"] else "",
                     "Timing (ore)": t["timing_hours"], "SLA": t["timing_color"],
                 })
@@ -1063,6 +1049,24 @@ class MainWindow(QMainWindow):
                 cd.append({"Fornitore":f,"Totale":t,"LTE KO":sum(1 for d in devs if d.check_lte=="KO"),"SSH KO":sum(1 for d in devs if d.check_ssh=="KO"),"Mongo KO":sum(1 for d in devs if d.check_mongo=="KO"),"Porta KO":sum(1 for d in devs if d.porta_aperta=="KO"),"Batt KO":sum(1 for d in devs if d.batteria=="KO"),"Disconnessi":sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO")})
             with pd.ExcelWriter(fp, engine='xlsxwriter') as w:
                 pd.DataFrame(fd).to_excel(w, index=False, sheet_name='Stato Fornitore'); pd.DataFrame(dd).to_excel(w, index=False, sheet_name='Stato DT'); pd.DataFrame(cd).to_excel(w, index=False, sheet_name='Correlazione')
+                # Sheet Jira per Fornitore e Livello
+                try:
+                    jira_data, target_stati = get_ticket_overview_by_fornitore()
+                    jira_rows = []
+                    for f in ["INDRA", "MII", "SIRTI"]:
+                        row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
+                        row_total = 0
+                        for s in target_stati:
+                            cnt = jira_data.get(f, {}).get(s, 0)
+                            row[s] = cnt; row_total += cnt
+                        row["Totale"] = row_total; jira_rows.append(row)
+                    tot_row = {"Fornitore": "Totale complessivo"}; grand = 0
+                    for s in target_stati:
+                        tot_row[s] = sum(r.get(s, 0) for r in jira_rows); grand += tot_row[s]
+                    tot_row["Totale"] = grand; jira_rows.append(tot_row)
+                    pd.DataFrame(jira_rows).to_excel(w, index=False, sheet_name='Jira per Fornitore')
+                except Exception:
+                    pass
             self.status_label.setText(f"Esportato: {fp}"); QMessageBox.information(self, "Export", f"Salvato:\n{fp}")
         except Exception as e: QMessageBox.critical(self, "Errore", str(e))
         finally: session.close()

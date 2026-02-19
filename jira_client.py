@@ -626,21 +626,31 @@ def get_jira_stats():
 
         # Settimanale (ultimi 7 giorni)
         d7 = now - timedelta(days=7)
-        # Aperti questa settimana (creati negli ultimi 7gg, non chiusi)
         week_aperti = session.query(JiraTicket).filter(
             ~JiraTicket.status.in_(stati_chiusi),
             JiraTicket.created >= d7).count()
-        # Chiusi questa settimana (status Chiusa, updated negli ultimi 7gg)
         week_chiusi = session.query(JiraTicket).filter(
             JiraTicket.status == "Chiusa",
             JiraTicket.updated >= d7).count()
-        # Scartati questa settimana (status Discarded, updated negli ultimi 7gg)
         week_scartati = session.query(JiraTicket).filter(
             JiraTicket.status == "Discarded",
             JiraTicket.updated >= d7).count()
 
+        # Ultimi 30 giorni
+        d30 = now - timedelta(days=30)
+        month_aperti = session.query(JiraTicket).filter(
+            ~JiraTicket.status.in_(stati_chiusi),
+            JiraTicket.created >= d30).count()
+        month_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.status == "Chiusa",
+            JiraTicket.updated >= d30).count()
+        month_scartati = session.query(JiraTicket).filter(
+            JiraTicket.status == "Discarded",
+            JiraTicket.updated >= d30).count()
+
         return {"total": total, "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
                 "chiuso": chiuso, "sospeso": sospeso,
-                "week_aperti": week_aperti, "week_chiusi": week_chiusi, "week_scartati": week_scartati}
+                "week_aperti": week_aperti, "week_chiusi": week_chiusi, "week_scartati": week_scartati,
+                "month_aperti": month_aperti, "month_chiusi": month_chiusi, "month_scartati": month_scartati}
     finally:
         session.close()
