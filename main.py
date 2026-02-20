@@ -69,17 +69,27 @@ QToolTip { background: #FFFFDD; color: black; border: 1px solid #333; padding: 4
 SEV_COLORS = {"CRITICAL": "#C62828", "HIGH": "#E65100", "MEDIUM": "#F9A825", "LOW": "#2E7D32"}
 SEV_BG = {"CRITICAL": "#FFEBEE", "HIGH": "#FFF3E0", "MEDIUM": "#FFFDE7", "LOW": "#E8F5E9"}
 HEALTH_BG = {"OK": "#E8F5E9", "KO": "#FFEBEE", "DEGRADED": "#FFF3E0", "UNKNOWN": "#F5F5F5"}
-AVAIL_COLORS = {"COMPLETE": "#2E7D32", "AVAILABLE": "#66BB6A", "NOT AVAILABLE": "#F9A825", "NO DATA": "#C62828"}
+AVAIL_COLORS = {
+    # Vecchi nomi
+    "COMPLETE": "#2E7D32", "AVAILABLE": "#66BB6A", "NOT AVAILABLE": "#F9A825", "NO DATA": "#C62828",
+    # Nuovi nomi
+    "DISPONIBILITÀ COMPLETA": "#2E7D32", "BUONA DISPONIBILITÀ": "#66BB6A",
+    "DISPONIBILITÀ LIMITATA": "#F9A825",
+}
 
 JIRA_LABELS = ["Misure_fuori_range", "Misure_assenti", "Disconnesso", "Allarme_batteria", "Porta_aperta", "Porta_dis", "Misure_parziali"]
 
 def avail_color(raw_status):
-    """Map any raw availability status to its color. Handles CODE_3, CODE_4, etc."""
+    """Map any raw availability status to its color. Handles old, new names and codes."""
     if not raw_status: return "#BDBDBD"
     v = raw_status.strip().upper()
-    if v in ("COMPLETE", "1", "CODE_1"): return "#2E7D32"
-    if v in ("AVAILABLE", "ON", "2", "CODE_2"): return "#66BB6A"
-    if v in ("NOT AVAILABLE", "OFF", "KO", "3", "CODE_3"): return "#F9A825"
+    # Verde scuro: Disponibilità completa / Complete
+    if v in ("COMPLETE", "1", "CODE_1") or "COMPLETA" in v: return "#2E7D32"
+    # Verde chiaro: Buona disponibilità / Available
+    if v in ("AVAILABLE", "ON", "2", "CODE_2") or "BUONA" in v: return "#66BB6A"
+    # Giallo: Disponibilità limitata / Not Available
+    if v in ("NOT AVAILABLE", "OFF", "KO", "3", "CODE_3") or "LIMITATA" in v: return "#F9A825"
+    # Rosso: No Data
     if v in ("NO DATA", "4", "CODE_4"): return "#C62828"
     return AVAIL_COLORS.get(v, "#BDBDBD")
 
@@ -349,7 +359,7 @@ class DeviceDetailDialog(QDialog):
                     bg = avail_color(a.raw_status)
                     bx = QLabel(""); bx.setFixedSize(14,14); bx.setStyleSheet(f"background:{bg};border-radius:2px;"); bx.setToolTip(f"{a.check_date}: {a.raw_status}"); tll.addWidget(bx)
                 tll.addStretch(); leg = QHBoxLayout()
-                for lbl, clr in [("COMPLETE","#2E7D32"),("AVAILABLE","#66BB6A"),("NOT AVAILABLE","#F9A825"),("NO DATA","#C62828")]:
+                for lbl, clr in [("Disp. Completa","#2E7D32"),("Buona Disp.","#66BB6A"),("Disp. Limitata","#F9A825"),("No Data","#C62828")]:
                     sq = QLabel(""); sq.setFixedSize(10,10); sq.setStyleSheet(f"background:{clr};border-radius:1px;"); leg.addWidget(sq); leg.addWidget(QLabel(f"<small>{lbl}</small>")); leg.addSpacing(8)
                 leg.addStretch(); tlo = QVBoxLayout(); tlo.addLayout(tll); tlo.addLayout(leg)
                 gtl = QGroupBox(f"Timeline Availability ({len(avail)} giorni)"); gtl.setLayout(tlo); cl.addWidget(gtl)
@@ -903,10 +913,13 @@ class MainWindow(QMainWindow):
             # Jira ticket per fornitore con L3/L4
             try:
                 jira_data, target_stati = get_ticket_overview_by_fornitore()
-                fornitore_order = ["INDRA","MII","SIRTI"]
-                self.ov_jira_table.setRowCount(len(fornitore_order) + 1)
+                fornitore_order = ["INDRA","MII","SIRTI","_SENZA"]
+                # Mostra "Senza Fornitore" solo se ha dati
+                has_senza = any(jira_data.get("_SENZA",{}).get(s,0) for s in target_stati)
+                display_order = fornitore_order if has_senza else ["INDRA","MII","SIRTI"]
+                self.ov_jira_table.setRowCount(len(display_order) + 1)
                 totals = {s: 0 for s in target_stati}; grand = 0
-                for i, f in enumerate(fornitore_order):
+                for i, f in enumerate(display_order):
                     display = FORNITORE_DISPLAY.get(f, f)
                     self.ov_jira_table.setItem(i, 0, colored_item(display, bold=True))
                     row_total = 0
@@ -916,7 +929,7 @@ class MainWindow(QMainWindow):
                         self.ov_jira_table.setItem(i, j+1, colored_item(cnt if cnt else "", bg))
                         totals[s] += cnt; row_total += cnt
                     self.ov_jira_table.setItem(i, len(target_stati)+1, colored_item(row_total, bold=True)); grand += row_total
-                tr = len(fornitore_order)
+                tr = len(display_order)
                 self.ov_jira_table.setItem(tr, 0, colored_item("Totale complessivo", bold=True))
                 for j, s in enumerate(target_stati):
                     self.ov_jira_table.setItem(tr, j+1, colored_item(totals[s], bold=True))
@@ -980,13 +993,16 @@ class MainWindow(QMainWindow):
             from jira_client import get_ticket_overview_by_fornitore
             jira_data, target_stati = get_ticket_overview_by_fornitore()
             forn_rows = []
-            for f in ["INDRA", "MII", "SIRTI"]:
+            forn_list = ["INDRA", "MII", "SIRTI", "_SENZA"]
+            for f in forn_list:
                 row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
                 row_total = 0
                 for s in target_stati:
                     cnt = jira_data.get(f, {}).get(s, 0)
                     row[s] = cnt; row_total += cnt
                 row["Totale"] = row_total
+                if f == "_SENZA" and row_total == 0:
+                    continue  # Ometti se vuoto
                 forn_rows.append(row)
             # Riga totale
             tot_row = {"Fornitore": "Totale complessivo"}
@@ -1053,13 +1069,16 @@ class MainWindow(QMainWindow):
                 try:
                     jira_data, target_stati = get_ticket_overview_by_fornitore()
                     jira_rows = []
-                    for f in ["INDRA", "MII", "SIRTI"]:
+                    for f in ["INDRA", "MII", "SIRTI", "_SENZA"]:
                         row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
                         row_total = 0
                         for s in target_stati:
                             cnt = jira_data.get(f, {}).get(s, 0)
                             row[s] = cnt; row_total += cnt
-                        row["Totale"] = row_total; jira_rows.append(row)
+                        row["Totale"] = row_total
+                        if f == "_SENZA" and row_total == 0:
+                            continue
+                        jira_rows.append(row)
                     tot_row = {"Fornitore": "Totale complessivo"}; grand = 0
                     for s in target_stati:
                         tot_row[s] = sum(r.get(s, 0) for r in jira_rows); grand += tot_row[s]

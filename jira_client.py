@@ -146,6 +146,7 @@ FORNITORE_DISPLAY = {
     "INDRA": "Lotto1-IndraOlivetti",
     "MII": "Lotto2-TelebitMarini",
     "SIRTI": "Lotto3-Sirti",
+    "_SENZA": "Senza Fornitore",
 }
 
 def map_jira_status(raw_status: str) -> str:
@@ -543,28 +544,25 @@ def get_ticket_data(filters=None):
 
 
 def get_ticket_overview_by_fornitore():
-    """Ritorna dati per tabella overview: ticket per fornitore con Aperto L3/L4."""
+    """Ritorna dati per tabella overview: ticket per fornitore con Aperto L3/L4.
+    Include riga Senza Fornitore per ticket senza fornitore riconosciuto."""
     session = SessionLocal()
     try:
         tickets = session.query(JiraTicket).all()
         target_stati = ["Aperto L3", "Aperto L4", "Chiuso", "Sospeso"]
-        fornitore_order = ["INDRA", "MII", "SIRTI"]
-        # Stati Jira considerati "aperti" (non chiusi/scartati)
-        stati_aperti = {"Aperto", "Work In Progress", "Selected For Evaluation"}
+        fornitore_order = ["INDRA", "MII", "SIRTI", "_SENZA"]
 
         data = {f: {s: 0 for s in target_stati} for f in fornitore_order}
         for t in tickets:
-            forn = t.fornitore if t.fornitore in fornitore_order else None
-            if not forn:
-                continue
+            forn = t.fornitore if t.fornitore in ("INDRA", "MII", "SIRTI") else "_SENZA"
             mapped = map_jira_status(t.status or "")
             if mapped == "Aperto":
-                # Split per Assignee Level
                 level = (t.assignee_level or "").strip().upper()
                 if level == "L4":
                     data[forn]["Aperto L4"] += 1
+                elif level in ("L1", "L2"):
+                    pass
                 else:
-                    # Default L3 se livello non specificato o L3
                     data[forn]["Aperto L3"] += 1
             elif mapped == "Chiuso":
                 data[forn]["Chiuso"] += 1
@@ -574,6 +572,7 @@ def get_ticket_overview_by_fornitore():
         return data, target_stati
     finally:
         session.close()
+
 
 
 def get_filter_options():
@@ -593,22 +592,22 @@ def get_filter_options():
 
 def get_jira_stats():
     """Ritorna statistiche Jira per le cards.
-    Card 1: Aperto L3, Aperto L4, Chiuso, Sospeso (totali)
-    Card 2: Settimanale aperti, chiusi, scartati
+    I totali L3/L4/Chiuso/Sospeso derivano dalla stessa logica della tabella overview
+    per garantire allineamento perfetto.
     """
     session = SessionLocal()
     try:
         total = session.query(JiraTicket).count()
         empty = {"total": 0, "aperto_l3": 0, "aperto_l4": 0, "chiuso": 0, "sospeso": 0,
-                 "week_aperti": 0, "week_chiusi": 0, "week_scartati": 0}
+                 "week_aperti": 0, "week_chiusi": 0, "week_scartati": 0,
+                 "month_aperti": 0, "month_chiusi": 0, "month_scartati": 0}
         if total == 0:
             return empty
 
         now = datetime.now()
         stati_chiusi = ["Chiusa", "Discarded"]
-        stati_sospesi = ["Suspended"]
 
-        # Totali: Aperto L3, Aperto L4, Chiuso, Sospeso
+        # Totali: tutti i ticket (inclusi senza fornitore)
         all_tickets = session.query(JiraTicket).all()
         aperto_l3 = 0; aperto_l4 = 0; chiuso = 0; sospeso = 0
         for t in all_tickets:
@@ -617,12 +616,15 @@ def get_jira_stats():
                 level = (t.assignee_level or "").strip().upper()
                 if level == "L4":
                     aperto_l4 += 1
+                elif level in ("L1", "L2"):
+                    pass
                 else:
                     aperto_l3 += 1
             elif mapped == "Chiuso":
                 chiuso += 1
             elif mapped == "Sospeso":
                 sospeso += 1
+        total_counted = aperto_l3 + aperto_l4 + chiuso + sospeso
 
         # Settimanale (ultimi 7 giorni)
         d7 = now - timedelta(days=7)
@@ -648,7 +650,7 @@ def get_jira_stats():
             JiraTicket.status == "Discarded",
             JiraTicket.updated >= d30).count()
 
-        return {"total": total, "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
+        return {"total": total_counted, "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
                 "chiuso": chiuso, "sospeso": sospeso,
                 "week_aperti": week_aperti, "week_chiusi": week_chiusi, "week_scartati": week_scartati,
                 "month_aperti": month_aperti, "month_chiusi": month_chiusi, "month_scartati": month_scartati}

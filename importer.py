@@ -10,12 +10,33 @@ from typing import Dict, Tuple, Optional
 from pathlib import Path
 from database import get_session, init_db, Device, AvailabilityDaily, AnomalyEvent, ImportLog, TicketHistory
 
-# I 4 stati ufficiali derivati dai codici numerici dello sheet Av Status
+# I 4 stati ufficiali — nuova nomenclatura (febbraio 2026)
+# I codici numerici dello sheet Av Status ora mappano ai nuovi nomi
 AV_STATUS_NUMERIC = {
-    1: "COMPLETE",        # Tutte le metriche → OK
-    2: "AVAILABLE",       # Almeno meteo + una di tiro → OK
-    3: "NOT AVAILABLE",   # Manca almeno una metrica meteo e un sensore di tiro → KO
-    4: "NO DATA",         # Il dispositivo non comunica misure → KO
+    1: "DISPONIBILITÀ COMPLETA",   # Tutte le metriche → OK
+    2: "BUONA DISPONIBILITÀ",      # Manca qualche metrica non critica → OK
+    3: "DISPONIBILITÀ LIMITATA",   # Manca almeno una metrica rilevante → KO
+    4: "NO DATA",                  # Non comunica misure → KO
+}
+
+# Mappatura unificata: tutti i possibili nomi (vecchi + nuovi + legacy) → (raw_canonical, norm)
+_AVAIL_MAP = {
+    # Nuova nomenclatura
+    "DISPONIBILITÀ COMPLETA":   ("DISPONIBILITÀ COMPLETA", "OK"),
+    "DISPONIBILITA COMPLETA":   ("DISPONIBILITÀ COMPLETA", "OK"),   # senza accento
+    "BUONA DISPONIBILITÀ":      ("BUONA DISPONIBILITÀ", "OK"),
+    "BUONA DISPONIBILITA":      ("BUONA DISPONIBILITÀ", "OK"),      # senza accento
+    "DISPONIBILITÀ LIMITATA":   ("DISPONIBILITÀ LIMITATA", "KO"),
+    "DISPONIBILITA LIMITATA":   ("DISPONIBILITÀ LIMITATA", "KO"),   # senza accento
+    "NO DATA":                  ("NO DATA", "KO"),
+    # Vecchia nomenclatura (compatibilità storico)
+    "COMPLETE":                 ("COMPLETE", "OK"),
+    "AVAILABLE":                ("AVAILABLE", "OK"),
+    "NOT AVAILABLE":            ("NOT AVAILABLE", "KO"),
+    # Legacy
+    "ON":                       ("AVAILABLE", "OK"),
+    "OFF":                      ("NOT AVAILABLE", "KO"),
+    "KO":                       ("NOT AVAILABLE", "KO"),
 }
 
 FORNITORE_MAP = {
@@ -34,8 +55,10 @@ def normalize_fornitore(raw) -> str:
 def normalize_availability(raw_value) -> Tuple[str, str]:
     """Normalizza un valore di availability.
     Ritorna (raw_status, norm_status) dove:
-      raw_status = uno dei 4 stati: COMPLETE, AVAILABLE, NOT AVAILABLE, NO DATA
+      raw_status = nome stato (vecchio o nuovo)
       norm_status = OK o KO
+    Gestisce sia vecchia nomenclatura (COMPLETE, AVAILABLE, NOT AVAILABLE, NO DATA)
+    che nuova (DISPONIBILITÀ COMPLETA, BUONA DISPONIBILITÀ, DISPONIBILITÀ LIMITATA, NO DATA).
     """
     if pd.isna(raw_value) or raw_value == "" or raw_value is None:
         return ("UNKNOWN", "UNKNOWN")
@@ -47,24 +70,10 @@ def normalize_availability(raw_value) -> Tuple[str, str]:
         norm = "OK" if val in (1, 2) else "KO"
         return (raw, norm)
 
-    # Testo dallo sheet Stato (colonne AVAILABILITY)
+    # Testo: cerca nella mappa unificata
     val = str(raw_value).strip().upper()
-
-    # Mappa diretta ai 4 stati ufficiali
-    if val in ("COMPLETE",):
-        return ("COMPLETE", "OK")
-    elif val in ("AVAILABLE", "ON"):
-        # "ON" mappato come AVAILABLE (legacy compatibilità)
-        return ("AVAILABLE", "OK")
-    elif val in ("NOT AVAILABLE",):
-        return ("NOT AVAILABLE", "KO")
-    elif val in ("NO DATA",):
-        return ("NO DATA", "KO")
-    elif val in ("OFF",):
-        # "OFF" mappato come NOT AVAILABLE (legacy compatibilità)
-        return ("NOT AVAILABLE", "KO")
-    elif val in ("KO",):
-        return ("NOT AVAILABLE", "KO")
+    if val in _AVAIL_MAP:
+        return _AVAIL_MAP[val]
 
     return (val, "UNKNOWN")
 
