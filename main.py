@@ -1028,6 +1028,9 @@ class MainWindow(QMainWindow):
                     "Data Chiusura": closed_str,
                     "Ultimo Aggiornamento": t["updated"].strftime("%Y-%m-%d") if t["updated"] else "",
                     "Timing (ore)": t["timing_hours"], "SLA": t["timing_color"],
+                    "EFFETTO": t.get("effetto", ""),
+                    "CAUSA": t.get("causa", ""),
+                    "RISOLUZIONE": t.get("cluster_risoluzione", ""),
                 })
             with pd.ExcelWriter(fp, engine='xlsxwriter') as w:
                 pd.DataFrame(riepilogo).to_excel(w, index=False, sheet_name='Riepilogo')
@@ -1042,6 +1045,7 @@ class MainWindow(QMainWindow):
                         ws.set_column('A:A', 12); ws.set_column('B:B', 35); ws.set_column('C:C', 12)
                         ws.set_column('D:D', 18); ws.set_column('E:E', 10); ws.set_column('F:F', 25)
                         ws.set_column('G:G', 20); ws.set_column('H:H', 20)
+                        ws.set_column('Q:Q', 40); ws.set_column('R:R', 40); ws.set_column('S:S', 35)
             self.status_label.setText(f"Esportato: {fp}")
             QMessageBox.information(self, "Export Jira", f"Dettaglio Jira salvato:\n{fp}")
         except Exception as e:

@@ -76,6 +76,7 @@ class JiraTicket(Base):
     info_l2 = Column(Text)
     info_l3 = Column(Text)
     info_l4 = Column(Text)
+    cluster_risoluzione = Column(Text)           # "Cluster Risoluzione" da Jira → colonna RISOLUZIONE export
     status_l1 = Column(String)
     status_l2 = Column(String)
     status_l3 = Column(String)
@@ -97,6 +98,20 @@ class JiraTicket(Base):
 # Crea tabella se non esiste
 def init_jira_db():
     Base.metadata.create_all(engine)
+    # Migrazione: aggiunge cluster_risoluzione se la tabella esiste già senza quel campo
+    try:
+        with engine.connect() as conn:
+            cols = [row[1] for row in conn.execute(
+                __import__('sqlalchemy').text("PRAGMA table_info(jira_tickets)")
+            )]
+            if "cluster_risoluzione" not in cols:
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE jira_tickets ADD COLUMN cluster_risoluzione TEXT"
+                ))
+                conn.commit()
+                print("[DB] Colonna cluster_risoluzione aggiunta a jira_tickets")
+    except Exception as e:
+        print(f"[DB] Migrazione cluster_risoluzione: {e}")
 
 
 def extract_device_id(summary: str) -> str:
@@ -190,6 +205,7 @@ def compute_timing_hours(created_str, updated_str):
 CUSTOM_FIELD_NAMES = [
     "Assignee Level", "Vendor",
     "Info L1", "Info L2", "Info L3", "Info L4",
+    "Cluster Risoluzione",
     "Status L1", "Status L2", "Status L3", "Status L4",
 ]
 
@@ -335,6 +351,7 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             ticket.info_l2 = _get_custom_field(f, custom_field_map, "Info L2")
             ticket.info_l3 = _get_custom_field(f, custom_field_map, "Info L3")
             ticket.info_l4 = _get_custom_field(f, custom_field_map, "Info L4")
+            ticket.cluster_risoluzione = _get_custom_field(f, custom_field_map, "Cluster Risoluzione")
             ticket.status_l1 = _get_custom_field(f, custom_field_map, "Status L1")
             ticket.status_l2 = _get_custom_field(f, custom_field_map, "Status L2")
             ticket.status_l3 = _get_custom_field(f, custom_field_map, "Status L3")
@@ -444,6 +461,7 @@ def import_from_excel(file_path: str):
             ticket.info_l2 = _safe_excel("Info L2", "Campo personalizzato (Info L2)")
             ticket.info_l3 = _safe_excel("Info L3", "Campo personalizzato (Info L3)")
             ticket.info_l4 = _safe_excel("Info L4", "Campo personalizzato (Info L4)")
+            ticket.cluster_risoluzione = _safe_excel("Cluster Risoluzione", "Campo personalizzato (Cluster Risoluzione)")
             ticket.status_l1 = _safe_excel("Status L1", "Campo personalizzato (Status L1)")
             ticket.status_l2 = _safe_excel("Status L2", "Campo personalizzato (Status L2)")
             ticket.status_l3 = _safe_excel("Status L3", "Campo personalizzato (Status L3)")
@@ -537,6 +555,9 @@ def get_ticket_data(filters=None):
                 "url": t.url or "",
                 "fornitore": t.fornitore or "",
                 "num_comments": t.num_comments or 0,
+                "effetto": t.info_l1 or "",
+                "causa": t.info_l4 or "",
+                "cluster_risoluzione": t.cluster_risoluzione or "",
             })
         return result
     finally:
