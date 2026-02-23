@@ -622,6 +622,7 @@ class MainWindow(QMainWindow):
         self.dev_no_ticket_btn = QPushButton("Solo senza ticket"); self.dev_no_ticket_btn.setObjectName("toggle_off"); self.dev_no_ticket_btn.setCheckable(True); self.dev_no_ticket_btn.clicked.connect(self._toggle_dev_nt); flt.addWidget(self.dev_no_ticket_btn)
         flt.addStretch(); self.dev_count_label = QLabel(""); self.dev_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.dev_count_label)
         jb2 = QPushButton("Jira Selezionati"); jb2.setObjectName("jira"); jb2.clicked.connect(self._jira_from_devices); flt.addWidget(jb2)
+        lb2 = QPushButton("Apri su Lista"); lb2.setObjectName("secondary"); lb2.setToolTip("Carica una lista di DeviceID da Excel (senza header) e apri il dialogo Jira"); lb2.clicked.connect(self._open_from_list); flt.addWidget(lb2)
         cb2 = QPushButton("Pulisci Filtri"); cb2.setObjectName("secondary"); cb2.clicked.connect(self._clear_dev_filters); flt.addWidget(cb2); layout.addLayout(flt)
         cols = ["DeviceID","Linea","Fornitore","Tipo","DT","Health","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Trend","Giorni","Malf.","Ticket"]
         self.dev_table = FilterableTable(cols)
@@ -651,6 +652,59 @@ class MainWindow(QMainWindow):
                     for k,a in [("tipo_malf","tipo_malfunzionamento"),("tipo_malf_jira","tipo_malf_jira"),("cluster_jira","cluster_jira"),("note","note"),("lte","check_lte"),("ssh","check_ssh"),("mongo","check_mongo"),("batteria","batteria"),("porta","porta_aperta")]: td[k] = getattr(d, a, None)
                 enriched.append(td)
         finally: session.close()
+        JiraTicketDialog(enriched, self).exec_()
+
+    def _open_from_list(self):
+        """Carica una lista di DeviceID da Excel senza header e apre JiraTicketDialog."""
+        fp, _ = QFileDialog.getOpenFileName(self, "Seleziona Lista DeviceID", "", "Excel (*.xlsx *.xls);;CSV (*.csv);;All (*)")
+        if not fp: return
+        try:
+            import pandas as pd
+            if fp.lower().endswith('.csv'):
+                df = pd.read_csv(fp, header=None, dtype=str)
+            else:
+                df = pd.read_excel(fp, header=None, dtype=str)
+            # Prende la prima colonna, rimuove righe vuote
+            device_ids = [str(v).strip() for v in df.iloc[:, 0].dropna().tolist() if str(v).strip() and str(v).strip().upper() != 'NAN']
+            if not device_ids:
+                QMessageBox.warning(self, "Lista vuota", "Nessun DeviceID trovato nel file."); return
+        except Exception as e:
+            QMessageBox.critical(self, "Errore lettura file", str(e)); return
+
+        session = get_session()
+        try:
+            enriched = []
+            not_found = []
+            for did in device_ids:
+                d = session.get(Device, did)
+                if d:
+                    td = {
+                        "_full_did": d.device_id,
+                        "DeviceID": d.device_id,
+                        "tipo_malf": d.tipo_malfunzionamento,
+                        "tipo_malf_jira": d.tipo_malf_jira,
+                        "cluster_jira": d.cluster_jira,
+                        "note": d.note,
+                        "lte": d.check_lte,
+                        "ssh": d.check_ssh,
+                        "mongo": d.check_mongo,
+                        "batteria": d.batteria,
+                        "porta": d.porta_aperta,
+                    }
+                    enriched.append(td)
+                else:
+                    not_found.append(did)
+        finally:
+            session.close()
+
+        if not_found:
+            msg = f"DeviceID non trovati nel DB ({len(not_found)}):\n" + "\n".join(not_found[:20])
+            if len(not_found) > 20: msg += f"\n... e altri {len(not_found)-20}"
+            QMessageBox.warning(self, "DeviceID non trovati", msg)
+
+        if not enriched:
+            QMessageBox.warning(self, "Nessun device valido", "Nessuno dei DeviceID della lista è presente nel DB."); return
+
         JiraTicketDialog(enriched, self).exec_()
 
     def _create_overview_tab(self):
@@ -772,10 +826,9 @@ class MainWindow(QMainWindow):
             if t["status"] in ("Chiusa","Discarded") and t["updated"]:
                 closed_str = t["updated"].strftime("%Y-%m-%d")
             h = t["timing_hours"]; timing_txt = f"{h}h"
-            sdid = ":".join(t["device_id"].split(":")[-2:]) if ":" in t["device_id"] else t["device_id"]
             ris = t.get("risoluzione","")
             macro = t.get("macro_area","")
-            rows.append({"Ticket":t["key"],"_key":t["key"],"DeviceID":sdid,"_full_did":t["device_id"],"Data Apertura":created_str,"Stato":t["status"],"Livello":t.get("assignee_level",""),"Tipo Malf.":t["labels"],"Macro-area":macro,"Risoluzione":ris,"Aggiornato":updated_str,"Chiusura":closed_str,"Timing":timing_txt,"_timing_color":t["timing_color"],"_has_ris":bool(ris),"_has_macro":bool(macro)})
+            rows.append({"Ticket":t["key"],"_key":t["key"],"DeviceID":t["device_id"],"_full_did":t["device_id"],"Data Apertura":created_str,"Stato":t["status"],"Livello":t.get("assignee_level",""),"Tipo Malf.":t["labels"],"Macro-area":macro,"Risoluzione":ris,"Aggiornato":updated_str,"Chiusura":closed_str,"Timing":timing_txt,"_timing_color":t["timing_color"],"_has_ris":bool(ris),"_has_macro":bool(macro)})
         def render_tkt(row, col):
             val = row.get(col, "")
             if col == "Ticket":
@@ -840,8 +893,7 @@ class MainWindow(QMainWindow):
                 q = q.filter((Device.ticket_id == None) | (Device.ticket_id == ""))
             data = []
             for event, device in q.all():
-                sdid = ":".join(device.device_id.split(":")[-2:]) if ":" in device.device_id else device.device_id
-                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":sdid,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
+                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
@@ -874,9 +926,8 @@ class MainWindow(QMainWindow):
             if self._dev_no_ticket: q = q.filter((Device.ticket_id == None) | (Device.ticket_id == ""))
             data = []
             for d in q.all():
-                sdid = ":".join(d.device_id.split(":")[-2:]) if ":" in d.device_id else d.device_id
                 sd = d.sistema_digil or ""; ts = "M" if "master" in sd else "S" if "slave" in sd else "?"
-                data.append({"DeviceID":sdid,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","LTE":d.check_lte or "-","SSH":d.check_ssh or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
+                data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","LTE":d.check_lte or "-","SSH":d.check_ssh or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
             def rd(row, col):
                 val = row.get(col, "")
                 if col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
