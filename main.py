@@ -823,8 +823,10 @@ class MainWindow(QMainWindow):
             created_str = t["created"].strftime("%Y-%m-%d") if t["created"] else ""
             updated_str = t["updated"].strftime("%Y-%m-%d") if t["updated"] else ""
             closed_str = ""
-            if t["status"] in ("Chiusa","Discarded") and t["updated"]:
-                closed_str = t["updated"].strftime("%Y-%m-%d")
+            # Usa resolution_date (data effettiva chiusura Jira) se disponibile, altrimenti updated
+            if t["status"] in ("Chiusa","Discarded"):
+                rd = t.get("resolution_date")
+                closed_str = rd.strftime("%Y-%m-%d") if rd else (t["updated"].strftime("%Y-%m-%d") if t["updated"] else "")
             h = t["timing_hours"]; timing_txt = f"{h}h"
             ris = t.get("risoluzione","")
             macro = t.get("macro_area","")
@@ -1066,9 +1068,11 @@ class MainWindow(QMainWindow):
             all_tickets = get_ticket_data()
             ticket_rows = []
             for t in all_tickets:
+                # Usa resolution_date (data effettiva chiusura Jira) se disponibile, altrimenti updated
                 closed_str = ""
-                if t["status"] in ("Chiusa", "Discarded") and t["updated"]:
-                    closed_str = t["updated"].strftime("%Y-%m-%d")
+                if t["status"] in ("Chiusa", "Discarded"):
+                    rd = t.get("resolution_date")
+                    closed_str = rd.strftime("%Y-%m-%d") if rd else (t["updated"].strftime("%Y-%m-%d") if t["updated"] else "")
                 ticket_rows.append({
                     "Ticket": t["key"], "DeviceID": t["device_id"], "Fornitore": t["fornitore"],
                     "Stato": t["status"], "Assignee Level": t.get("assignee_level",""),

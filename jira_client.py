@@ -63,6 +63,7 @@ class JiraTicket(Base):
     reporter = Column(String)
     created = Column(DateTime)
     updated = Column(DateTime)
+    resolution_date = Column(DateTime)               # "Risolti" da Jira — data effettiva chiusura
     due_date = Column(Date)
     labels = Column(String)
     comments = Column(Text)
@@ -110,8 +111,14 @@ def init_jira_db():
                 ))
                 conn.commit()
                 print("[DB] Colonna cluster_risoluzione aggiunta a jira_tickets")
+            if "resolution_date" not in cols:
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE jira_tickets ADD COLUMN resolution_date DATETIME"
+                ))
+                conn.commit()
+                print("[DB] Colonna resolution_date aggiunta a jira_tickets")
     except Exception as e:
-        print(f"[DB] Migrazione cluster_risoluzione: {e}")
+        print(f"[DB] Migrazione: {e}")
 
 
 def extract_device_id(summary: str) -> str:
@@ -366,6 +373,11 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             except Exception:
                 pass
             try:
+                rd = getattr(f, 'resolutiondate', None)
+                ticket.resolution_date = datetime.fromisoformat(str(rd)[:19]) if rd else None
+            except Exception:
+                pass
+            try:
                 ticket.due_date = date.fromisoformat(str(f.duedate)) if f.duedate else None
             except Exception:
                 pass
@@ -478,6 +490,12 @@ def import_from_excel(file_path: str):
             except Exception:
                 pass
             try:
+                # "Risolti" è il nome della colonna nel CSV export Jira (campo standard resolutiondate)
+                rd = str(row.get("Resolved", row.get("Risolti", "")))
+                ticket.resolution_date = datetime.fromisoformat(rd[:19]) if rd and rd not in ("nan", "NaT", "") else None
+            except Exception:
+                pass
+            try:
                 d = str(row.get("Due Date", ""))
                 ticket.due_date = date.fromisoformat(d[:10]) if d and d != "nan" and d != "NaT" else None
             except Exception:
@@ -539,6 +557,7 @@ def get_ticket_data(filters=None):
                 "labels": t.labels or "",
                 "risoluzione": t.risoluzione_attuata or "",
                 "updated": t.updated,
+                "resolution_date": t.resolution_date,
                 "due_date": t.due_date,
                 "timing_hours": hours,
                 "timing_color": color,
@@ -654,10 +673,10 @@ def get_jira_stats():
             JiraTicket.created >= d7).count()
         week_chiusi = session.query(JiraTicket).filter(
             JiraTicket.status == "Chiusa",
-            JiraTicket.updated >= d7).count()
+            JiraTicket.resolution_date >= d7).count()
         week_scartati = session.query(JiraTicket).filter(
             JiraTicket.status == "Discarded",
-            JiraTicket.updated >= d7).count()
+            JiraTicket.resolution_date >= d7).count()
 
         # Ultimi 30 giorni
         d30 = now - timedelta(days=30)
@@ -666,10 +685,10 @@ def get_jira_stats():
             JiraTicket.created >= d30).count()
         month_chiusi = session.query(JiraTicket).filter(
             JiraTicket.status == "Chiusa",
-            JiraTicket.updated >= d30).count()
+            JiraTicket.resolution_date >= d30).count()
         month_scartati = session.query(JiraTicket).filter(
             JiraTicket.status == "Discarded",
-            JiraTicket.updated >= d30).count()
+            JiraTicket.resolution_date >= d30).count()
 
         return {"total": total_counted, "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
                 "chiuso": chiuso, "sospeso": sospeso,
