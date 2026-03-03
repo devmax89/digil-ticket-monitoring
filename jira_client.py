@@ -525,10 +525,12 @@ def _correlate_with_devices(session):
 
 
 def get_ticket_data(filters=None):
-    """Ritorna i ticket filtrati per la visualizzazione."""
+    """Ritorna i ticket filtrati per la visualizzazione.
+    Solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI)."""
     session = SessionLocal()
+    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
     try:
-        q = session.query(JiraTicket)
+        q = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI))
         if filters:
             if filters.get("status"):
                 q = q.filter(JiraTicket.status == filters["status"])
@@ -585,16 +587,17 @@ def get_ticket_data(filters=None):
 
 def get_ticket_overview_by_fornitore():
     """Ritorna dati per tabella overview: ticket per fornitore con Aperto L3/L4.
-    Include riga Senza Fornitore per ticket senza fornitore riconosciuto."""
+    Solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI)."""
     session = SessionLocal()
     try:
-        tickets = session.query(JiraTicket).all()
+        VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
+        tickets = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).all()
         target_stati = ["Aperto L3", "Aperto L4", "Chiuso", "Sospeso"]
-        fornitore_order = ["INDRA", "MII", "SIRTI", "_SENZA"]
+        fornitore_order = ["INDRA", "MII", "SIRTI"]
 
         data = {f: {s: 0 for s in target_stati} for f in fornitore_order}
         for t in tickets:
-            forn = t.fornitore if t.fornitore in ("INDRA", "MII", "SIRTI") else "_SENZA"
+            forn = t.fornitore
             mapped = map_jira_status(t.status or "")
             if mapped == "Aperto":
                 level = (t.assignee_level or "").strip().upper()
@@ -616,14 +619,16 @@ def get_ticket_overview_by_fornitore():
 
 
 def get_filter_options():
-    """Ritorna le opzioni uniche per i filtri."""
+    """Ritorna le opzioni uniche per i filtri. Solo ticket con fornitore riconosciuto."""
     session = SessionLocal()
+    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
     try:
-        reporters = sorted(set(r[0] for r in session.query(JiraTicket.reporter).distinct().all() if r[0]))
-        statuses = sorted(set(r[0] for r in session.query(JiraTicket.status).distinct().all() if r[0]))
-        assignees = sorted(set(r[0] for r in session.query(JiraTicket.assignee).distinct().all() if r[0]))
-        resolutions = sorted(set(r[0] for r in session.query(JiraTicket.resolution).distinct().all() if r[0]))
-        priorities = sorted(set(r[0] for r in session.query(JiraTicket.priority).distinct().all() if r[0]))
+        q = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI))
+        reporters = sorted(set(r.reporter for r in q.all() if r.reporter))
+        statuses = sorted(set(r.status for r in q.all() if r.status))
+        assignees = sorted(set(r.assignee for r in q.all() if r.assignee))
+        resolutions = sorted(set(r.resolution for r in q.all() if r.resolution))
+        priorities = sorted(set(r.priority for r in q.all() if r.priority))
         return {"reporters": reporters, "statuses": statuses, "assignees": assignees,
                 "resolutions": resolutions, "priorities": priorities}
     finally:
@@ -632,12 +637,14 @@ def get_filter_options():
 
 def get_jira_stats():
     """Ritorna statistiche Jira per le cards.
+    Solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI).
     I totali L3/L4/Chiuso/Sospeso derivano dalla stessa logica della tabella overview
     per garantire allineamento perfetto.
     """
     session = SessionLocal()
+    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
     try:
-        total = session.query(JiraTicket).count()
+        total = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).count()
         empty = {"total": 0, "aperto_l3": 0, "aperto_l4": 0, "chiuso": 0, "sospeso": 0,
                  "week_aperti": 0, "week_chiusi": 0, "week_scartati": 0,
                  "month_aperti": 0, "month_chiusi": 0, "month_scartati": 0}
@@ -647,8 +654,8 @@ def get_jira_stats():
         now = datetime.now()
         stati_chiusi = ["Chiusa", "Discarded"]
 
-        # Totali: tutti i ticket (inclusi senza fornitore)
-        all_tickets = session.query(JiraTicket).all()
+        # Totali: solo ticket con fornitore riconosciuto
+        all_tickets = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).all()
         aperto_l3 = 0; aperto_l4 = 0; chiuso = 0; sospeso = 0
         for t in all_tickets:
             mapped = map_jira_status(t.status or "")
@@ -669,24 +676,30 @@ def get_jira_stats():
         # Settimanale (ultimi 7 giorni)
         d7 = now - timedelta(days=7)
         week_aperti = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             ~JiraTicket.status.in_(stati_chiusi),
             JiraTicket.created >= d7).count()
         week_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             JiraTicket.status == "Chiusa",
             JiraTicket.resolution_date >= d7).count()
         week_scartati = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             JiraTicket.status == "Discarded",
             JiraTicket.resolution_date >= d7).count()
 
         # Ultimi 30 giorni
         d30 = now - timedelta(days=30)
         month_aperti = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             ~JiraTicket.status.in_(stati_chiusi),
             JiraTicket.created >= d30).count()
         month_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             JiraTicket.status == "Chiusa",
             JiraTicket.resolution_date >= d30).count()
         month_scartati = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
             JiraTicket.status == "Discarded",
             JiraTicket.resolution_date >= d30).count()
 

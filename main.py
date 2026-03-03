@@ -963,13 +963,10 @@ class MainWindow(QMainWindow):
                 self.ov_corr_table.setItem(i,0,colored_item(f,bold=True)); self.ov_corr_table.setItem(i,1,colored_item(total))
                 self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_lte=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.check_ssh=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,5,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,6,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True)); self.ov_corr_table.setItem(i,7,colored_item(sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO"),"#FFEBEE","#C62828",True))
             self.ov_corr_table.resizeRowsToContents()
-            # Jira ticket per fornitore con L3/L4
+            # Jira ticket per fornitore con L3/L4 (solo vendor riconosciuti)
             try:
                 jira_data, target_stati = get_ticket_overview_by_fornitore()
-                fornitore_order = ["INDRA","MII","SIRTI","_SENZA"]
-                # Mostra "Senza Fornitore" solo se ha dati
-                has_senza = any(jira_data.get("_SENZA",{}).get(s,0) for s in target_stati)
-                display_order = fornitore_order if has_senza else ["INDRA","MII","SIRTI"]
+                display_order = ["INDRA", "MII", "SIRTI"]
                 self.ov_jira_table.setRowCount(len(display_order) + 1)
                 totals = {s: 0 for s in target_stati}; grand = 0
                 for i, f in enumerate(display_order):
@@ -1046,7 +1043,7 @@ class MainWindow(QMainWindow):
             from jira_client import get_ticket_overview_by_fornitore
             jira_data, target_stati = get_ticket_overview_by_fornitore()
             forn_rows = []
-            forn_list = ["INDRA", "MII", "SIRTI", "_SENZA"]
+            forn_list = ["INDRA", "MII", "SIRTI"]
             for f in forn_list:
                 row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
                 row_total = 0
@@ -1054,8 +1051,6 @@ class MainWindow(QMainWindow):
                     cnt = jira_data.get(f, {}).get(s, 0)
                     row[s] = cnt; row_total += cnt
                 row["Totale"] = row_total
-                if f == "_SENZA" and row_total == 0:
-                    continue  # Ometti se vuoto
                 forn_rows.append(row)
             # Riga totale
             tot_row = {"Fornitore": "Totale complessivo"}
@@ -1128,15 +1123,13 @@ class MainWindow(QMainWindow):
                 try:
                     jira_data, target_stati = get_ticket_overview_by_fornitore()
                     jira_rows = []
-                    for f in ["INDRA", "MII", "SIRTI", "_SENZA"]:
+                    for f in ["INDRA", "MII", "SIRTI"]:
                         row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
                         row_total = 0
                         for s in target_stati:
                             cnt = jira_data.get(f, {}).get(s, 0)
                             row[s] = cnt; row_total += cnt
                         row["Totale"] = row_total
-                        if f == "_SENZA" and row_total == 0:
-                            continue
                         jira_rows.append(row)
                     tot_row = {"Fornitore": "Totale complessivo"}; grand = 0
                     for s in target_stati:
