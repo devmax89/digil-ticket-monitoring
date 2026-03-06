@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
         self.card_total = self._make_card("0","Dispositivi"); self.card_ok = self._make_card("0","OK","#E8F5E9"); self.card_ko = self._make_card("0","KO","#FFEBEE"); self.card_deg = self._make_card("0","Degraded","#FFF3E0"); self.card_crit = self._make_card("0","Alert Critical","#FFEBEE"); self.card_high = self._make_card("0","Alert High","#FFF3E0")
         sep2 = QFrame(); sep2.setFrameShape(QFrame.VLine); sep2.setStyleSheet("background:#0066CC;"); sep2.setFixedWidth(3)
         self.card_jira_totale = self._make_quad_card("Jira Ticket",
-            [("0","L3","#C62828"),("0","L4","#E65100"),("0","Chiuso","#2E7D32"),("0","Sosp.","#F9A825")], "#E3F2FD")
+            [("0","L3","#C62828"),("0","L4","#E65100"),("0","Chiuso","#2E7D32"),("0","Scar.","#757575")], "#E3F2FD")
         self.card_jira_week = self._make_triple_card("Jira 7gg",
             [("0","Aperti","#C62828"),("0","Chiusi","#2E7D32"),("0","Scart.","#757575")], "#FFFFFF")
         for c in [self.card_total,self.card_ok,self.card_ko,self.card_deg,self.card_crit,self.card_high]: cl.addWidget(c)
@@ -718,8 +718,8 @@ class MainWindow(QMainWindow):
         self.ov_corr_table = QTableWidget(); self.ov_corr_table.setColumnCount(8); self.ov_corr_table.setHorizontalHeaderLabels(["Fornitore","Totale","LTE KO","SSH KO","Mongo KO","Porta KO","Batt KO","Disconnessi"]); self.ov_corr_table.horizontalHeader().setStretchLastSection(True)
         gc = QGroupBox("Correlazione Diagnostica"); gcl = QVBoxLayout(); gcl.addWidget(self.ov_corr_table); gc.setLayout(gcl); ccl.addWidget(gc)
         # Tabella Jira ticket per fornitore con L3/L4
-        self.ov_jira_table = QTableWidget(); self.ov_jira_table.setColumnCount(6)
-        self.ov_jira_table.setHorizontalHeaderLabels(["Fornitore","Aperto L3","Aperto L4","Chiuso","Sospeso","Totale"])
+        self.ov_jira_table = QTableWidget(); self.ov_jira_table.setColumnCount(7)
+        self.ov_jira_table.setHorizontalHeaderLabels(["Fornitore","Aperto L3","Aperto L4","Chiuso","Sospeso","Scartato","Totale"])
         self.ov_jira_table.horizontalHeader().setStretchLastSection(True)
         gjt = QGroupBox("Ticket Jira per Fornitore e Livello"); jfl = QVBoxLayout(); jfl.addWidget(self.ov_jira_table); gjt.setLayout(jfl); ccl.addWidget(gjt)
         ccl.addStretch(); scroll.setWidget(content); layout.addWidget(scroll); return tab
@@ -994,7 +994,7 @@ class MainWindow(QMainWindow):
         try:
             js = get_jira_stats()
             self._update_multi_card(self.card_jira_totale,
-                [js["aperto_l3"], js["aperto_l4"], js["chiuso"], js["sospeso"]])
+                [js["aperto_l3"], js["aperto_l4"], js["chiuso"], js["scartato"]])
             self._update_multi_card(self.card_jira_week,
                 [js["week_aperti"], js["week_chiusi"], js["week_scartati"]])
         except Exception:
@@ -1035,9 +1035,9 @@ class MainWindow(QMainWindow):
             js = get_jira_stats()
             # Sheet 1: Riepilogo (le cards)
             riepilogo = [
-                {"Periodo": "Totale", "Aperto L3": js["aperto_l3"], "Aperto L4": js["aperto_l4"], "Chiuso": js["chiuso"], "Sospeso": js["sospeso"], "Totale": js["total"]},
-                {"Periodo": "Ultimi 7 giorni", "Aperti": js["week_aperti"], "Chiusi": js["week_chiusi"], "Scartati": js["week_scartati"]},
-                {"Periodo": "Ultimi 30 giorni", "Aperti": js["month_aperti"], "Chiusi": js["month_chiusi"], "Scartati": js["month_scartati"]},
+                {"Periodo": "Totale", "Aperto L3": js["aperto_l3"], "Aperto L4": js["aperto_l4"], "Chiuso": js["chiuso"], "Sospeso": js["sospeso"], "Scartato": js["scartato"], "Totale": js["total"]},
+                {"Periodo": "Ultimi 7 giorni",  "Aperti (creati)": js["week_aperti"],  "Chiusi (risolti)": js["week_chiusi"],  "Scartati (creati)": js["week_scartati"]},
+                {"Periodo": "Ultimi 30 giorni", "Aperti (creati)": js["month_aperti"], "Chiusi (risolti)": js["month_chiusi"], "Scartati (creati)": js["month_scartati"]},
             ]
             # Sheet 2: Ticket per fornitore/stato
             from jira_client import get_ticket_overview_by_fornitore
