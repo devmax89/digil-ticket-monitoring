@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QProgressBar,
     QGroupBox, QFileDialog, QMessageBox, QTabWidget, QHeaderView,
     QAbstractItemView, QStatusBar, QFrame, QLineEdit, QComboBox,
-    QDialog, QTextEdit, QScrollArea, QSplitter, QSizePolicy,
+    QDialog, QTextEdit, QPlainTextEdit, QScrollArea, QSplitter, QSizePolicy,
     QFormLayout, QDateEdit, QDialogButtonBox, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDate, QTimer
@@ -153,6 +153,118 @@ class FilterableTable(QWidget):
     def get_selected_rows_data(self):
         rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
         return [self._filt[r] for r in rows if r < len(self._filt)]
+
+
+class JiraFromListDialog(QDialog):
+    """Dialog per inserire device_id manualmente (uno per riga) o importarli da un file Excel/CSV."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Jira da Lista Device")
+        self.setMinimumSize(560, 480)
+        self.setStyleSheet(STYLE)
+        layout = QVBoxLayout(self)
+
+        # Titolo
+        layout.addWidget(QLabel("<b style='color:#0052CC;font-size:14px'>Prepara ticket Jira da lista device</b>"))
+        layout.addWidget(QLabel("<small>Inserisci i Device ID uno per riga, oppure importali da un file Excel o CSV.</small>"))
+
+        # Area di testo per inserimento manuale
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText(
+            "Inserisci i Device ID uno per riga, es.:\n"
+            "1:1:2:16:21:DIGIL_IND_0607\n"
+            "1:1:2:16:22:DIGIL_MRN_0270\n"
+            "..."
+        )
+        self.text_edit.setMinimumHeight(220)
+        layout.addWidget(self.text_edit)
+
+        # Barra import da file
+        file_row = QHBoxLayout()
+        self.file_label = QLabel("Nessun file selezionato")
+        self.file_label.setStyleSheet("color:#666;font-style:italic;")
+        import_btn = QPushButton("Importa da Excel/CSV")
+        import_btn.setObjectName("secondary")
+        import_btn.clicked.connect(self._import_from_file)
+        file_row.addWidget(import_btn)
+        file_row.addWidget(self.file_label)
+        file_row.addStretch()
+        layout.addLayout(file_row)
+
+        # Info colonna
+        self.col_combo_label = QLabel("Colonna Device ID:")
+        self.col_combo_label.hide()
+        self.col_combo = QComboBox()
+        self.col_combo.hide()
+        col_row = QHBoxLayout()
+        col_row.addWidget(self.col_combo_label)
+        col_row.addWidget(self.col_combo)
+        col_row.addStretch()
+        layout.addLayout(col_row)
+
+        # Contatore
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet("color:#0066CC;font-weight:bold;")
+        layout.addWidget(self.count_label)
+        self.text_edit.textChanged.connect(self._update_count)
+
+        # Bottoni
+        br = QHBoxLayout()
+        br.addStretch()
+        cancel_btn = QPushButton("Annulla"); cancel_btn.setObjectName("secondary"); cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("Prepara Ticket Jira ▶"); ok_btn.setObjectName("jira"); ok_btn.clicked.connect(self._on_accept)
+        br.addWidget(cancel_btn); br.addWidget(ok_btn)
+        layout.addLayout(br)
+
+        self._df_cache = None  # DataFrame importato da file
+
+    def _update_count(self):
+        ids = [l.strip() for l in self.text_edit.toPlainText().splitlines() if l.strip()]
+        n = len(ids)
+        self.count_label.setText(f"{n} device ID inseriti" if n else "")
+
+    def _import_from_file(self):
+        fp, _ = QFileDialog.getOpenFileName(self, "Importa file", str(Path.home()),
+                                             "Excel / CSV (*.xlsx *.xls *.csv)")
+        if not fp: return
+        try:
+            import pandas as pd
+            if fp.lower().endswith(".csv"):
+                df = pd.read_csv(fp, dtype=str)
+            else:
+                df = pd.read_excel(fp, dtype=str)
+            df.columns = [str(c).strip() for c in df.columns]
+            self._df_cache = df
+            self.file_label.setText(Path(fp).name)
+
+            # Mostra combo per selezione colonna
+            self.col_combo.clear()
+            self.col_combo.addItems(list(df.columns))
+            # Pre-seleziona colonna con "device" o "id" nel nome
+            for i, c in enumerate(df.columns):
+                if any(k in c.lower() for k in ("device", "did", "id dispositivo", "device_id")):
+                    self.col_combo.setCurrentIndex(i); break
+            self.col_combo_label.show(); self.col_combo.show()
+            self.col_combo.currentTextChanged.connect(self._load_ids_from_col)
+            self._load_ids_from_col(self.col_combo.currentText())
+        except Exception as e:
+            QMessageBox.critical(self, "Errore import", f"Impossibile leggere il file:\n{e}")
+
+    def _load_ids_from_col(self, col_name):
+        if self._df_cache is None or col_name not in self._df_cache.columns: return
+        ids = self._df_cache[col_name].dropna().astype(str).str.strip()
+        ids = [v for v in ids if v and v.lower() != "nan"]
+        self.text_edit.setPlainText("\n".join(ids))
+
+    def _on_accept(self):
+        ids = self.get_device_ids()
+        if not ids:
+            QMessageBox.warning(self, "Lista vuota", "Inserisci almeno un Device ID."); return
+        self.accept()
+
+    def get_device_ids(self):
+        return [l.strip() for l in self.text_edit.toPlainText().splitlines() if l.strip()]
+
 
 class JiraTicketDialog(QDialog):
     def __init__(self, tickets_data, parent=None):
@@ -581,6 +693,7 @@ class MainWindow(QMainWindow):
         self.alert_no_ticket_btn = QPushButton("Solo senza ticket"); self.alert_no_ticket_btn.setObjectName("toggle_off"); self.alert_no_ticket_btn.setCheckable(True); self.alert_no_ticket_btn.clicked.connect(self._toggle_alert_nt); flt.addWidget(self.alert_no_ticket_btn)
         flt.addStretch(); self.alert_count_label = QLabel(""); self.alert_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.alert_count_label)
         jb = QPushButton("Jira Selezionati"); jb.setObjectName("jira"); jb.clicked.connect(self._jira_from_alerts); flt.addWidget(jb)
+        jbl = QPushButton("Jira da Lista"); jbl.setObjectName("jira"); jbl.clicked.connect(self._jira_from_list); flt.addWidget(jbl)
         cb = QPushButton("Pulisci Filtri"); cb.setObjectName("secondary"); cb.clicked.connect(self._clear_alert_filters); flt.addWidget(cb); layout.addLayout(flt)
         cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Onesait","Descrizione","Ticket"]
         self.alert_table = FilterableTable(cols)
@@ -622,7 +735,7 @@ class MainWindow(QMainWindow):
         self.dev_no_ticket_btn = QPushButton("Solo senza ticket"); self.dev_no_ticket_btn.setObjectName("toggle_off"); self.dev_no_ticket_btn.setCheckable(True); self.dev_no_ticket_btn.clicked.connect(self._toggle_dev_nt); flt.addWidget(self.dev_no_ticket_btn)
         flt.addStretch(); self.dev_count_label = QLabel(""); self.dev_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.dev_count_label)
         jb2 = QPushButton("Jira Selezionati"); jb2.setObjectName("jira"); jb2.clicked.connect(self._jira_from_devices); flt.addWidget(jb2)
-        lb2 = QPushButton("Apri su Lista"); lb2.setObjectName("secondary"); lb2.setToolTip("Carica una lista di DeviceID da Excel (senza header) e apri il dialogo Jira"); lb2.clicked.connect(self._open_from_list); flt.addWidget(lb2)
+        jbl2 = QPushButton("Jira da Lista"); jbl2.setObjectName("jira"); jbl2.clicked.connect(self._jira_from_list); flt.addWidget(jbl2)
         cb2 = QPushButton("Pulisci Filtri"); cb2.setObjectName("secondary"); cb2.clicked.connect(self._clear_dev_filters); flt.addWidget(cb2); layout.addLayout(flt)
         cols = ["DeviceID","Linea","Fornitore","Tipo","DT","Health","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Trend","Giorni","Malf.","Ticket"]
         self.dev_table = FilterableTable(cols)
@@ -654,58 +767,41 @@ class MainWindow(QMainWindow):
         finally: session.close()
         JiraTicketDialog(enriched, self).exec_()
 
-    def _open_from_list(self):
-        """Carica una lista di DeviceID da Excel senza header e apre JiraTicketDialog."""
-        fp, _ = QFileDialog.getOpenFileName(self, "Seleziona Lista DeviceID", "", "Excel (*.xlsx *.xls);;CSV (*.csv);;All (*)")
-        if not fp: return
-        try:
-            import pandas as pd
-            if fp.lower().endswith('.csv'):
-                df = pd.read_csv(fp, header=None, dtype=str)
-            else:
-                df = pd.read_excel(fp, header=None, dtype=str)
-            # Prende la prima colonna, rimuove righe vuote
-            device_ids = [str(v).strip() for v in df.iloc[:, 0].dropna().tolist() if str(v).strip() and str(v).strip().upper() != 'NAN']
-            if not device_ids:
-                QMessageBox.warning(self, "Lista vuota", "Nessun DeviceID trovato nel file."); return
-        except Exception as e:
-            QMessageBox.critical(self, "Errore lettura file", str(e)); return
-
+    def _jira_from_list(self):
+        """Apre dialog per inserire device_id manualmente o da Excel, poi prepara i ticket Jira."""
+        dlg = JiraFromListDialog(self)
+        if dlg.exec_() != QDialog.Accepted: return
+        device_ids = dlg.get_device_ids()
+        if not device_ids: return
         session = get_session()
         try:
             enriched = []
             not_found = []
             for did in device_ids:
+                did = did.strip()
+                if not did: continue
                 d = session.get(Device, did)
                 if d:
                     td = {
-                        "_full_did": d.device_id,
-                        "DeviceID": d.device_id,
-                        "tipo_malf": d.tipo_malfunzionamento,
-                        "tipo_malf_jira": d.tipo_malf_jira,
-                        "cluster_jira": d.cluster_jira,
-                        "note": d.note,
-                        "lte": d.check_lte,
-                        "ssh": d.check_ssh,
-                        "mongo": d.check_mongo,
-                        "batteria": d.batteria,
-                        "porta": d.porta_aperta,
+                        "_full_did": d.device_id, "DeviceID": d.device_id,
+                        "tipo_malf": d.tipo_malfunzionamento, "tipo_malf_jira": d.tipo_malf_jira,
+                        "cluster_jira": d.cluster_jira, "note": d.note,
+                        "lte": d.check_lte, "ssh": d.check_ssh, "mongo": d.check_mongo,
+                        "batteria": d.batteria, "porta": d.porta_aperta,
                     }
                     enriched.append(td)
                 else:
+                    # Device non trovato nel DB — aggiungiamo comunque con campi vuoti
+                    enriched.append({"_full_did": did, "DeviceID": did})
                     not_found.append(did)
-        finally:
-            session.close()
-
+        finally: session.close()
         if not_found:
-            msg = f"DeviceID non trovati nel DB ({len(not_found)}):\n" + "\n".join(not_found[:20])
-            if len(not_found) > 20: msg += f"\n... e altri {len(not_found)-20}"
-            QMessageBox.warning(self, "DeviceID non trovati", msg)
-
-        if not enriched:
-            QMessageBox.warning(self, "Nessun device valido", "Nessuno dei DeviceID della lista è presente nel DB."); return
-
-        JiraTicketDialog(enriched, self).exec_()
+            QMessageBox.warning(self, "Device non trovati",
+                f"I seguenti device ID non sono stati trovati nel DB locale ({len(not_found)}):\n" +
+                "\n".join(not_found[:20]) + ("\n..." if len(not_found) > 20 else "") +
+                "\n\nVerranno comunque inclusi nel ticket con campi vuoti.")
+        if enriched:
+            JiraTicketDialog(enriched, self).exec_()
 
     def _create_overview_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); er = QHBoxLayout(); er.addStretch()
@@ -750,7 +846,7 @@ class MainWindow(QMainWindow):
         # Tabella con Macro-area
         cols = ["Ticket","DeviceID","Data Apertura","Stato","Livello","Tipo Malf.","Macro-area","Risoluzione","Aggiornato","Chiusura","Timing"]
         self.tkt_table = FilterableTable(cols)
-        self.tkt_table.table.setColumnWidth(0,80); self.tkt_table.table.setColumnWidth(1,120); self.tkt_table.table.setColumnWidth(2,90)
+        self.tkt_table.table.setColumnWidth(0,80); self.tkt_table.table.setColumnWidth(1,200); self.tkt_table.table.setColumnWidth(2,90)
         self.tkt_table.table.setColumnWidth(3,120); self.tkt_table.table.setColumnWidth(4,130); self.tkt_table.table.setColumnWidth(5,120)
         self.tkt_table.table.setColumnWidth(6,150); self.tkt_table.table.setColumnWidth(7,90); self.tkt_table.table.setColumnWidth(8,85); self.tkt_table.table.setColumnWidth(9,70)
         self.tkt_table.table.doubleClicked.connect(self._on_tkt_dblclick)
@@ -823,10 +919,8 @@ class MainWindow(QMainWindow):
             created_str = t["created"].strftime("%Y-%m-%d") if t["created"] else ""
             updated_str = t["updated"].strftime("%Y-%m-%d") if t["updated"] else ""
             closed_str = ""
-            # Usa resolution_date (data effettiva chiusura Jira) se disponibile, altrimenti updated
-            if t["status"] in ("Chiusa","Discarded"):
-                rd = t.get("resolution_date")
-                closed_str = rd.strftime("%Y-%m-%d") if rd else (t["updated"].strftime("%Y-%m-%d") if t["updated"] else "")
+            if t["status"] in ("Chiusa","Discarded") and t["updated"]:
+                closed_str = t["updated"].strftime("%Y-%m-%d")
             h = t["timing_hours"]; timing_txt = f"{h}h"
             ris = t.get("risoluzione","")
             macro = t.get("macro_area","")
@@ -857,7 +951,7 @@ class MainWindow(QMainWindow):
                     return colored_item("", "#FFFDE7")
                 return QTableWidgetItem(str(val))
             elif col == "DeviceID":
-                it = QTableWidgetItem(val); it.setForeground(QColor("#0066CC")); return it
+                it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
             return QTableWidgetItem(str(val))
         self.tkt_table.set_data(rows, render_tkt)
         self.tkt_count_label.setText(f"{len(rows)} ticket")
@@ -893,13 +987,23 @@ class MainWindow(QMainWindow):
             # Toggle: solo senza ticket
             if self._alert_no_ticket:
                 q = q.filter((Device.ticket_id == None) | (Device.ticket_id == ""))
-            data = []
+            # Deduplicazione: un solo alert per device, il più recente (created_at)
+            best = {}  # device_id -> (event, device)
             for event, device in q.all():
+                did = device.device_id
+                if did not in best:
+                    best[did] = (event, device)
+                else:
+                    prev_ev, _ = best[did]
+                    if (event.created_at or datetime.min) > (prev_ev.created_at or datetime.min):
+                        best[did] = (event, device)
+            data = []
+            for event, device in best.values():
                 data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
-                elif col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
+                elif col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col in ("LTE","SSH","Mongo","Batt","Porta"): return check_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Onesait" and val != "-": return colored_item(val, "#FFF3E0", "#E65100")
@@ -932,7 +1036,7 @@ class MainWindow(QMainWindow):
                 data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","LTE":d.check_lte or "-","SSH":d.check_ssh or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
             def rd(row, col):
                 val = row.get(col, "")
-                if col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
+                if col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col == "Health": return colored_item(val, HEALTH_BG.get(val,""), bold=True)
                 elif col in ("LTE","SSH","Mongo","Batt","Porta"): return check_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
@@ -963,7 +1067,7 @@ class MainWindow(QMainWindow):
                 self.ov_corr_table.setItem(i,0,colored_item(f,bold=True)); self.ov_corr_table.setItem(i,1,colored_item(total))
                 self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_lte=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.check_ssh=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,5,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,6,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True)); self.ov_corr_table.setItem(i,7,colored_item(sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO"),"#FFEBEE","#C62828",True))
             self.ov_corr_table.resizeRowsToContents()
-            # Jira ticket per fornitore con L3/L4 (solo vendor riconosciuti)
+            # Jira ticket per fornitore con L3/L4
             try:
                 jira_data, target_stati = get_ticket_overview_by_fornitore()
                 display_order = ["INDRA", "MII", "SIRTI"]
@@ -1035,9 +1139,9 @@ class MainWindow(QMainWindow):
             js = get_jira_stats()
             # Sheet 1: Riepilogo (le cards)
             riepilogo = [
-                {"Periodo": "Totale", "Aperto L3": js["aperto_l3"], "Aperto L4": js["aperto_l4"], "Chiuso": js["chiuso"], "Sospeso": js["sospeso"], "Scartato": js["scartato"], "Totale": js["total"]},
-                {"Periodo": "Ultimi 7 giorni",  "Aperti (creati)": js["week_aperti"],  "Chiusi (risolti)": js["week_chiusi"],  "Scartati (creati)": js["week_scartati"]},
-                {"Periodo": "Ultimi 30 giorni", "Aperti (creati)": js["month_aperti"], "Chiusi (risolti)": js["month_chiusi"], "Scartati (creati)": js["month_scartati"]},
+                {"Periodo": "Totale", "Aperto L3": js["aperto_l3"], "Aperto L4": js["aperto_l4"], "Chiuso": js["chiuso"], "Sospeso": js.get("sospeso",0), "Scartato": js.get("scartato",0), "Totale": js["total"]},
+                {"Periodo": "Ultimi 7 giorni", "Aperti": js["week_aperti"], "Chiusi": js["week_chiusi"], "Scartati": js["week_scartati"]},
+                {"Periodo": "Ultimi 30 giorni", "Aperti": js["month_aperti"], "Chiusi": js["month_chiusi"], "Scartati": js["month_scartati"]},
             ]
             # Sheet 2: Ticket per fornitore/stato
             from jira_client import get_ticket_overview_by_fornitore
@@ -1063,11 +1167,9 @@ class MainWindow(QMainWindow):
             all_tickets = get_ticket_data()
             ticket_rows = []
             for t in all_tickets:
-                # Usa resolution_date (data effettiva chiusura Jira) se disponibile, altrimenti updated
                 closed_str = ""
-                if t["status"] in ("Chiusa", "Discarded"):
-                    rd = t.get("resolution_date")
-                    closed_str = rd.strftime("%Y-%m-%d") if rd else (t["updated"].strftime("%Y-%m-%d") if t["updated"] else "")
+                if t["status"] in ("Chiusa", "Discarded") and t["updated"]:
+                    closed_str = t["updated"].strftime("%Y-%m-%d")
                 ticket_rows.append({
                     "Ticket": t["key"], "DeviceID": t["device_id"], "Fornitore": t["fornitore"],
                     "Stato": t["status"], "Assignee Level": t.get("assignee_level",""),
@@ -1095,7 +1197,6 @@ class MainWindow(QMainWindow):
                         ws.set_column('A:A', 12); ws.set_column('B:B', 35); ws.set_column('C:C', 12)
                         ws.set_column('D:D', 18); ws.set_column('E:E', 10); ws.set_column('F:F', 25)
                         ws.set_column('G:G', 20); ws.set_column('H:H', 20)
-                        ws.set_column('Q:Q', 40); ws.set_column('R:R', 40); ws.set_column('S:S', 35)
             self.status_label.setText(f"Esportato: {fp}")
             QMessageBox.information(self, "Export Jira", f"Dettaglio Jira salvato:\n{fp}")
         except Exception as e:
@@ -1123,13 +1224,15 @@ class MainWindow(QMainWindow):
                 try:
                     jira_data, target_stati = get_ticket_overview_by_fornitore()
                     jira_rows = []
-                    for f in ["INDRA", "MII", "SIRTI"]:
+                    for f in ["INDRA", "MII", "SIRTI", "_SENZA"]:
                         row = {"Fornitore": FORNITORE_DISPLAY.get(f, f)}
                         row_total = 0
                         for s in target_stati:
                             cnt = jira_data.get(f, {}).get(s, 0)
                             row[s] = cnt; row_total += cnt
                         row["Totale"] = row_total
+                        if f == "_SENZA" and row_total == 0:
+                            continue
                         jira_rows.append(row)
                     tot_row = {"Fornitore": "Totale complessivo"}; grand = 0
                     for s in target_stati:

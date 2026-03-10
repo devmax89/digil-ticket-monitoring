@@ -63,7 +63,7 @@ class JiraTicket(Base):
     reporter = Column(String)
     created = Column(DateTime)
     updated = Column(DateTime)
-    resolution_date = Column(DateTime)               # "Risolti" da Jira — data effettiva chiusura
+    resolution_date = Column(DateTime)
     due_date = Column(Date)
     labels = Column(String)
     comments = Column(Text)
@@ -77,7 +77,7 @@ class JiraTicket(Base):
     info_l2 = Column(Text)
     info_l3 = Column(Text)
     info_l4 = Column(Text)
-    cluster_risoluzione = Column(Text)           # "Cluster Risoluzione" da Jira → colonna RISOLUZIONE export
+    cluster_risoluzione = Column(Text)
     status_l1 = Column(String)
     status_l2 = Column(String)
     status_l3 = Column(String)
@@ -99,7 +99,7 @@ class JiraTicket(Base):
 # Crea tabella se non esiste
 def init_jira_db():
     Base.metadata.create_all(engine)
-    # Migrazione: aggiunge cluster_risoluzione se la tabella esiste già senza quel campo
+    # Migrazioni colonne mancanti
     try:
         with engine.connect() as conn:
             cols = [row[1] for row in conn.execute(
@@ -119,6 +119,26 @@ def init_jira_db():
                 print("[DB] Colonna resolution_date aggiunta a jira_tickets")
     except Exception as e:
         print(f"[DB] Migrazione: {e}")
+    # Pulizia automatica: rimuove ticket non "Bug in esercizio" già presenti nel DB
+    purge_non_bug_tickets()
+
+
+def purge_non_bug_tickets():
+    """Rimuove dal DB tutti i ticket con issue_type != 'Bug in esercizio'.
+    Chiamata automaticamente all'avvio per garantire pulizia dopo aggiornamenti del filtro."""
+    session = SessionLocal()
+    try:
+        deleted = session.query(JiraTicket).filter(
+            JiraTicket.issue_type != "Bug in esercizio"
+        ).delete(synchronize_session=False)
+        session.commit()
+        if deleted > 0:
+            print(f"[DB] Rimossi {deleted} ticket non 'Bug in esercizio' dal DB")
+    except Exception as e:
+        session.rollback()
+        print(f"[DB] Errore purge ticket: {e}")
+    finally:
+        session.close()
 
 
 def extract_device_id(summary: str) -> str:
@@ -163,6 +183,10 @@ JIRA_STATUS_MAP = {
     "Discarded": "Scartato",   # separato da Chiuso
     "Suspended": "Sospeso",
 }
+
+# Costanti usate in tutte le query Jira
+VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
+STATI_APERTI_JIRA = ("Aperto", "Work In Progress", "Selected For Evaluation")
 
 FORNITORE_DISPLAY = {
     "INDRA": "Lotto1-IndraOlivetti",
@@ -212,8 +236,8 @@ def compute_timing_hours(created_str, updated_str):
 CUSTOM_FIELD_NAMES = [
     "Assignee Level", "Vendor",
     "Info L1", "Info L2", "Info L3", "Info L4",
-    "Cluster Risoluzione",
     "Status L1", "Status L2", "Status L3", "Status L4",
+    "Cluster Risoluzione",
 ]
 
 _custom_field_cache = {}
@@ -376,7 +400,7 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
                 rd = getattr(f, 'resolutiondate', None)
                 ticket.resolution_date = datetime.fromisoformat(str(rd)[:19]) if rd else None
             except Exception:
-                pass
+                ticket.resolution_date = None
             try:
                 ticket.due_date = date.fromisoformat(str(f.duedate)) if f.duedate else None
             except Exception:
@@ -490,11 +514,11 @@ def import_from_excel(file_path: str):
             except Exception:
                 pass
             try:
-                # "Risolti" è il nome della colonna nel CSV export Jira (campo standard resolutiondate)
-                rd = str(row.get("Resolved", row.get("Risolti", "")))
+                # "Risolti" = nome colonna CSV Jira italiano; "Resolved" = inglese
+                rd = str(row.get("Risolti", row.get("Resolved", row.get("Campo personalizzato (Resolved)", ""))))
                 ticket.resolution_date = datetime.fromisoformat(rd[:19]) if rd and rd not in ("nan", "NaT", "") else None
             except Exception:
-                pass
+                ticket.resolution_date = None
             try:
                 d = str(row.get("Due Date", ""))
                 ticket.due_date = date.fromisoformat(d[:10]) if d and d != "nan" and d != "NaT" else None
@@ -526,11 +550,13 @@ def _correlate_with_devices(session):
 
 def get_ticket_data(filters=None):
     """Ritorna i ticket filtrati per la visualizzazione.
-    Solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI)."""
+    Solo ticket: type='Bug in esercizio', fornitore IN (INDRA/MII/SIRTI)."""
     session = SessionLocal()
-    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
     try:
-        q = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI))
+        q = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio"
+        )
         if filters:
             if filters.get("status"):
                 q = q.filter(JiraTicket.status == filters["status"])
@@ -559,7 +585,6 @@ def get_ticket_data(filters=None):
                 "labels": t.labels or "",
                 "risoluzione": t.risoluzione_attuata or "",
                 "updated": t.updated,
-                "resolution_date": t.resolution_date,
                 "due_date": t.due_date,
                 "timing_hours": hours,
                 "timing_color": color,
@@ -586,21 +611,27 @@ def get_ticket_data(filters=None):
 
 
 def get_ticket_overview_by_fornitore():
-    """Ritorna dati per tabella overview: ticket per fornitore con Aperto L3/L4.
-    Solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI).
-    Discarded è separato da Chiuso."""
+    """Ritorna dati per tabella overview: ticket per fornitore.
+    Solo ticket: type='Bug in esercizio', fornitore IN (INDRA/MII/SIRTI).
+    Logica Chiuso/Scartato allineata a get_jira_stats:
+      - Scartato = status==Discarded OR (status==Chiusa AND info_l4 contiene 'Scartato')
+      - Chiuso   = status==Chiusa AND info_l4 NON contiene 'Scartato'"""
     session = SessionLocal()
     try:
-        VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
-        tickets = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).all()
+        tickets = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio"
+        ).all()
         target_stati = ["Aperto L3", "Aperto L4", "Chiuso", "Sospeso", "Scartato"]
         fornitore_order = ["INDRA", "MII", "SIRTI"]
 
         data = {f: {s: 0 for s in target_stati} for f in fornitore_order}
         for t in tickets:
             forn = t.fornitore
-            mapped = map_jira_status(t.status or "")
-            if mapped == "Aperto":
+            s = t.status or ""
+            info_l4 = t.info_l4 or ""
+            is_scartato = (s == "Discarded") or (s == "Chiusa" and "Scartato" in info_l4)
+            if s in STATI_APERTI_JIRA:
                 level = (t.assignee_level or "").strip().upper()
                 if level == "L4":
                     data[forn]["Aperto L4"] += 1
@@ -608,12 +639,12 @@ def get_ticket_overview_by_fornitore():
                     pass
                 else:
                     data[forn]["Aperto L3"] += 1
-            elif mapped == "Chiuso":
-                data[forn]["Chiuso"] += 1
-            elif mapped == "Sospeso":
-                data[forn]["Sospeso"] += 1
-            elif mapped == "Scartato":
+            elif is_scartato:
                 data[forn]["Scartato"] += 1
+            elif s == "Chiusa":
+                data[forn]["Chiuso"] += 1
+            elif s == "Suspended":
+                data[forn]["Sospeso"] += 1
 
         return data, target_stati
     finally:
@@ -622,16 +653,18 @@ def get_ticket_overview_by_fornitore():
 
 
 def get_filter_options():
-    """Ritorna le opzioni uniche per i filtri. Solo ticket con fornitore riconosciuto."""
+    """Ritorna le opzioni uniche per i filtri. Solo ticket 'Bug in esercizio' con fornitore riconosciuto."""
     session = SessionLocal()
-    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
     try:
-        q = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI))
-        reporters = sorted(set(r.reporter for r in q.all() if r.reporter))
-        statuses = sorted(set(r.status for r in q.all() if r.status))
-        assignees = sorted(set(r.assignee for r in q.all() if r.assignee))
-        resolutions = sorted(set(r.resolution for r in q.all() if r.resolution))
-        priorities = sorted(set(r.priority for r in q.all() if r.priority))
+        items = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio"
+        ).all()
+        reporters  = sorted(set(r.reporter   for r in items if r.reporter))
+        statuses   = sorted(set(r.status     for r in items if r.status))
+        assignees  = sorted(set(r.assignee   for r in items if r.assignee))
+        resolutions= sorted(set(r.resolution for r in items if r.resolution))
+        priorities = sorted(set(r.priority   for r in items if r.priority))
         return {"reporters": reporters, "statuses": statuses, "assignees": assignees,
                 "resolutions": resolutions, "priorities": priorities}
     finally:
@@ -640,32 +673,30 @@ def get_filter_options():
 
 def get_jira_stats():
     """
-    Statistiche Jira — solo ticket con fornitore riconosciuto (INDRA/MII/SIRTI).
+    Statistiche Jira.
+    Solo ticket: type='Bug in esercizio', fornitore IN (INDRA/MII/SIRTI).
 
     LOGICA NUMERICHE:
     ─────────────────────────────────────────────────────────────────────
-    TOTALI (cards header):
-      • Aperto L3  = status IN (Aperto, Work In Progress, Selected For Evaluation)
-                     AND assignee_level NOT IN (L1, L2, L4)
-      • Aperto L4  = stessi stati aperti AND assignee_level == L4
-      • Chiuso     = status == "Chiusa"  ← SOLO Chiusa, Discarded ESCLUSO
+    TOTALI:
+      • Aperto L3  = status IN STATI_APERTI_JIRA AND assignee_level NOT IN (L1,L2,L4)
+      • Aperto L4  = status IN STATI_APERTI_JIRA AND assignee_level == L4
+      • Chiuso     = status == "Chiusa" AND info_l4 NOT contiene "Scartato"
       • Sospeso    = status == "Suspended"
-      • Scartato   = status == "Discarded" ← contato separatamente
-
-    JIRA 7gg / 30gg:
-      • Aperti     = status NOT IN (Chiusa, Discarded, Suspended)
-                     AND created >= -7d/-30d   ← data CREAZIONE
-      • Chiusi     = status == "Chiusa"
-                     AND resolution_date >= -7d/-30d  ← data RISOLUZIONE effettiva
-      • Scartati   = status == "Discarded"
-                     AND created >= -7d/-30d   ← data CREAZIONE (come JQL Jira)
+      • Scartato   = status == "Discarded"
+                     OR (status == "Chiusa" AND info_l4 contiene "Scartato")
+    7gg / 30gg:
+      • Aperti    = status IN STATI_APERTI_JIRA AND created >= -Ngg
+      • Chiusi    = status == "Chiusa" AND info_l4 NOT "Scartato" AND resolution_date >= -Ngg
+      • Scartati  = (Discarded OR Chiusa+Scartato_L4) AND created >= -Ngg
     ─────────────────────────────────────────────────────────────────────
     """
     session = SessionLocal()
-    VENDOR_VALIDI = ("INDRA", "MII", "SIRTI")
-    STATI_APERTI = ("Aperto", "Work In Progress", "Selected For Evaluation")
     try:
-        total = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).count()
+        total = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio"
+        ).count()
         empty = {"total": 0, "aperto_l3": 0, "aperto_l4": 0, "chiuso": 0, "sospeso": 0, "scartato": 0,
                  "week_aperti": 0, "week_chiusi": 0, "week_scartati": 0,
                  "month_aperti": 0, "month_chiusi": 0, "month_scartati": 0}
@@ -675,11 +706,16 @@ def get_jira_stats():
         now = datetime.now()
 
         # ── TOTALI ──────────────────────────────────────────────────────
-        all_tickets = session.query(JiraTicket).filter(JiraTicket.fornitore.in_(VENDOR_VALIDI)).all()
+        all_tickets = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio"
+        ).all()
         aperto_l3 = 0; aperto_l4 = 0; chiuso = 0; sospeso = 0; scartato = 0
         for t in all_tickets:
             s = t.status or ""
-            if s in STATI_APERTI:
+            info_l4 = t.info_l4 or ""
+            is_scartato = (s == "Discarded") or (s == "Chiusa" and "Scartato" in info_l4)
+            if s in STATI_APERTI_JIRA:
                 level = (t.assignee_level or "").strip().upper()
                 if level == "L4":
                     aperto_l4 += 1
@@ -687,43 +723,65 @@ def get_jira_stats():
                     pass
                 else:
                     aperto_l3 += 1
+            elif is_scartato:
+                scartato += 1
             elif s == "Chiusa":
                 chiuso += 1
             elif s == "Suspended":
                 sospeso += 1
-            elif s == "Discarded":
-                scartato += 1
         total_counted = aperto_l3 + aperto_l4 + chiuso + sospeso + scartato
 
         # ── ULTIMI 7 GIORNI ─────────────────────────────────────────────
         d7 = now - timedelta(days=7)
         week_aperti = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
-            JiraTicket.status.in_(STATI_APERTI),
+            JiraTicket.issue_type == "Bug in esercizio",
+            JiraTicket.status.in_(STATI_APERTI_JIRA),
             JiraTicket.created >= d7).count()
         week_chiusi = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
             JiraTicket.status == "Chiusa",
+            ~JiraTicket.info_l4.like("%Scartato%"),
             JiraTicket.resolution_date >= d7).count()
-        week_scartati = session.query(JiraTicket).filter(
+        week_scartati_disc = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
             JiraTicket.status == "Discarded",
             JiraTicket.created >= d7).count()
+        week_scartati_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
+            JiraTicket.status == "Chiusa",
+            JiraTicket.info_l4.like("%Scartato%"),
+            JiraTicket.created >= d7).count()
+        week_scartati = week_scartati_disc + week_scartati_chiusi
 
         # ── ULTIMI 30 GIORNI ────────────────────────────────────────────
         d30 = now - timedelta(days=30)
         month_aperti = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
-            JiraTicket.status.in_(STATI_APERTI),
+            JiraTicket.issue_type == "Bug in esercizio",
+            JiraTicket.status.in_(STATI_APERTI_JIRA),
             JiraTicket.created >= d30).count()
         month_chiusi = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
             JiraTicket.status == "Chiusa",
+            ~JiraTicket.info_l4.like("%Scartato%"),
             JiraTicket.resolution_date >= d30).count()
-        month_scartati = session.query(JiraTicket).filter(
+        month_scartati_disc = session.query(JiraTicket).filter(
             JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
             JiraTicket.status == "Discarded",
             JiraTicket.created >= d30).count()
+        month_scartati_chiusi = session.query(JiraTicket).filter(
+            JiraTicket.fornitore.in_(VENDOR_VALIDI),
+            JiraTicket.issue_type == "Bug in esercizio",
+            JiraTicket.status == "Chiusa",
+            JiraTicket.info_l4.like("%Scartato%"),
+            JiraTicket.created >= d30).count()
+        month_scartati = month_scartati_disc + month_scartati_chiusi
 
         return {"total": total_counted,
                 "aperto_l3": aperto_l3, "aperto_l4": aperto_l4,
