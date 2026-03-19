@@ -843,8 +843,8 @@ class MainWindow(QMainWindow):
         cpb = QPushButton("Pulisci"); cpb.setObjectName("secondary"); cpb.setMaximumWidth(70); cpb.clicked.connect(self._clear_tkt_filters); flt.addWidget(cpb)
         flt.addStretch()
         layout.addLayout(flt)
-        # Tabella con Macro-area
-        cols = ["Ticket","DeviceID","Data Apertura","Stato","Livello","Tipo Malf.","Macro-area","Risoluzione","Aggiornato","Chiusura","Timing"]
+        # Tabella con Cluster-analisi
+        cols = ["Ticket","DeviceID","Data Apertura","Stato","Livello","Tipo Malf.","Cluster-analisi","Risoluzione","Aggiornato","Chiusura","Timing"]
         self.tkt_table = FilterableTable(cols)
         self.tkt_table.table.setColumnWidth(0,80); self.tkt_table.table.setColumnWidth(1,200); self.tkt_table.table.setColumnWidth(2,90)
         self.tkt_table.table.setColumnWidth(3,120); self.tkt_table.table.setColumnWidth(4,130); self.tkt_table.table.setColumnWidth(5,120)
@@ -924,7 +924,7 @@ class MainWindow(QMainWindow):
             h = t["timing_hours"]; timing_txt = f"{h}h"
             ris = t.get("risoluzione","")
             macro = t.get("macro_area","")
-            rows.append({"Ticket":t["key"],"_key":t["key"],"DeviceID":t["device_id"],"_full_did":t["device_id"],"Data Apertura":created_str,"Stato":t["status"],"Livello":t.get("assignee_level",""),"Tipo Malf.":t["labels"],"Macro-area":macro,"Risoluzione":ris,"Aggiornato":updated_str,"Chiusura":closed_str,"Timing":timing_txt,"_timing_color":t["timing_color"],"_has_ris":bool(ris),"_has_macro":bool(macro)})
+            rows.append({"Ticket":t["key"],"_key":t["key"],"DeviceID":t["device_id"],"_full_did":t["device_id"],"Data Apertura":created_str,"Stato":t["status"],"Livello":t.get("assignee_level",""),"Tipo Malf.":t["labels"],"Cluster-analisi":macro,"Risoluzione":ris,"Aggiornato":updated_str,"Chiusura":closed_str,"Timing":timing_txt,"_timing_color":t["timing_color"],"_has_ris":bool(ris),"_has_macro":bool(macro)})
         def render_tkt(row, col):
             val = row.get(col, "")
             if col == "Ticket":
@@ -946,7 +946,7 @@ class MainWindow(QMainWindow):
                 if not row.get("_has_ris"):
                     return colored_item("", "#FFFDE7")
                 return QTableWidgetItem(str(val))
-            elif col == "Macro-area":
+            elif col == "Cluster-analisi":
                 if not row.get("_has_macro"):
                     return colored_item("", "#FFFDE7")
                 return QTableWidgetItem(str(val))
@@ -1175,7 +1175,7 @@ class MainWindow(QMainWindow):
                     "Stato": t["status"], "Assignee Level": t.get("assignee_level",""),
                     "Priority": t["priority"], "Labels": t["labels"],
                     "Reporter": t["reporter"], "Assignee": t["assignee"],
-                    "Risoluzione": t["risoluzione"], "Macro-area": t["macro_area"],
+                    "Risoluzione": t["risoluzione"], "Cluster-analisi": t["macro_area"],
                     "Data Apertura": t["created"].strftime("%Y-%m-%d") if t["created"] else "",
                     "Data Chiusura": closed_str,
                     "Ultimo Aggiornamento": t["updated"].strftime("%Y-%m-%d") if t["updated"] else "",

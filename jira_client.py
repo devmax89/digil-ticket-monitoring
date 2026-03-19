@@ -545,7 +545,7 @@ def _correlate_with_devices(session):
         device = session.get(Device, ticket.device_id)
         if device:
             ticket.risoluzione_attuata = device.risoluzione_attuata or ""
-            ticket.macro_area = getattr(device, 'macro_area_causa', None) or ""
+            ticket.macro_area = getattr(device, 'cluster_analisi', None) or ""
 
 
 def get_ticket_data(filters=None):
