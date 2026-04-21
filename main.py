@@ -26,7 +26,7 @@ from jira_client import (init_jira_db, import_from_excel as jira_import_excel, d
 JIRA_USERS = {
     "Festa Rosa": "60705508126db9006f3be9e8",
     "Massimiliano Tavernese": "5e8ae84a84dec20b8159e37a",
-    "Paolo Marino": "712020:18a68569-e00b-414c-bd78-2ef0e43c0534",
+    "Matteo Massarotto": "712020:166aab81-574f-4eff-8eb0-c2ba527b79bf",
     "Vittorio Mitri": "5e86f312b39dbf0c114bdefa",
     "Team AMS": "622f434533fb840069656a1a",
 }
@@ -302,10 +302,9 @@ class JiraTicketDialog(QDialog):
             tm = td.get("tipo_malf","") or ""; tm = "" if tm=="-" else tm
             l1 = td.get("tipo_malf_jira","") or ""; l1 = "" if l1=="-" else l1
             l2 = td.get("cluster_jira","") or ""; l2 = "" if l2=="-" else l2
-            lte=td.get("lte",td.get("LTE","-")); ssh=td.get("ssh",td.get("SSH","-"))
             batt=td.get("batteria",td.get("Batt","-")); porta=td.get("porta",td.get("Porta","-"))
             mongo=td.get("mongo",td.get("Mongo","-")); note=td.get("note","") or ""; note="" if note=="-" else note
-            desc = f"Reply {self.reply_date.text()}: Valori recuperati: Check LTE:{lte}, check SSH:{ssh}, Batteria:{batt}, Porta aperta:{porta}, Check Mongo:{mongo}"
+            desc = f"Reply {self.reply_date.text()}: Valori recuperati: Batteria:{batt}, Porta aperta:{porta}, Check Mongo:{mongo}"
             if note: desc += f"\r\n{note}"
             self.tt.setItem(i,0,QTableWidgetItem(did)); self.tt.setItem(i,1,QTableWidgetItem(f"Device {did} {tm}".strip()))
             self.tt.setItem(i,0,QTableWidgetItem(did)); self.tt.setItem(i,1,QTableWidgetItem(f"Device {did} {tm}".strip()))
@@ -404,7 +403,7 @@ class DeviceDetailDialog(QDialog):
                     vl = QLabel(str(val)); vl.setTextInteractionFlags(Qt.TextSelectableByMouse); grid.addWidget(lb, r, 0); grid.addWidget(vl, r, 1); r += 1
             ga = QGroupBox("Anagrafica"); ga.setLayout(grid); cl.addWidget(ga)
             dl = QHBoxLayout()
-            for name, val in [("LTE",device.check_lte),("SSH",device.check_ssh),("Mongo",device.check_mongo),("Batteria",device.batteria),("Porta",device.porta_aperta)]:
+            for name, val in [("Mongo",device.check_mongo),("Batteria",device.batteria),("Porta",device.porta_aperta)]:
                 bx = QLabel(f"<center><small>{name}</small><br><b>{val or '-'}</b></center>")
                 bg = "#E8F5E9" if val=="OK" else "#FFEBEE" if val=="KO" else "#F5F5F5"
                 bx.setStyleSheet(f"background:{bg};border:1px solid #CCC;border-radius:4px;padding:6px;min-width:60px;"); dl.addWidget(bx)
@@ -487,7 +486,7 @@ class DeviceDetailDialog(QDialog):
         finally: session.close()
 
     def _copy_info(self, device, session):
-        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"LTE: {device.check_lte}",f"SSH: {device.check_ssh}",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}","","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
+        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}","","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
         if device.tipo_malfunzionamento: lines += ["","--- Malfunzionamento ---",f"Tipo: {device.tipo_malfunzionamento}",f"Cluster: {device.cluster_analisi or '-'}",f"Analisi: {device.analisi_malfunzionamento or '-'}",f"Cause: {device.cause_anomalie or '-'}",f"Note: {device.note or '-'}"]
         hist = session.query(TicketHistory).filter(TicketHistory.device_id==device.device_id).order_by(TicketHistory.first_seen.desc()).all()
         if hist:
@@ -496,7 +495,7 @@ class DeviceDetailDialog(QDialog):
         QApplication.clipboard().setText("\n".join(lines)); QMessageBox.information(self, "Copiato", "Info copiate!")
 
     def _open_jira(self, device):
-        JiraTicketDialog([{"_full_did":device.device_id,"DeviceID":device.device_id,"lte":device.check_lte,"ssh":device.check_ssh,"mongo":device.check_mongo,"batteria":device.batteria,"porta":device.porta_aperta,"tipo_malf":device.tipo_malfunzionamento,"tipo_malf_jira":device.tipo_malf_jira,"cluster_jira":device.cluster_jira,"note":device.note}], self).exec_()
+        JiraTicketDialog([{"_full_did":device.device_id,"DeviceID":device.device_id,"mongo":device.check_mongo,"batteria":device.batteria,"porta":device.porta_aperta,"tipo_malf":device.tipo_malfunzionamento,"tipo_malf_jira":device.tipo_malf_jira,"cluster_jira":device.cluster_jira,"note":device.note}], self).exec_()
 
 class TicketDetailDialog(QDialog):
     def __init__(self, data, parent=None):
@@ -578,18 +577,22 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self._startup_jira_download)
 
     def _startup_jira_download(self):
-        """Tenta download ticket Jira all'avvio (silenzioso, nessun popup)."""
+        """Chiede conferma e tenta download ticket Jira all'avvio."""
         if HAS_JIRA:
             from jira_client import _load_credentials
             email, token = _load_credentials()
             if email and token:
-                self.status_label.setText("Download ticket Jira in corso...")
-                ok, msg = download_from_jira(email=email, token=token)
-                if ok:
-                    self.status_label.setText(f"Jira: {msg}")
-                    self._populate_tkt_filters()
+                reply = QMessageBox.question(self, "Aggiornamento Jira", "Vuoi aggiornare i ticket Jira?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if reply == QMessageBox.Yes:
+                    self.status_label.setText("Download ticket Jira in corso...")
+                    ok, msg = download_from_jira(email=email, token=token)
+                    if ok:
+                        self.status_label.setText(f"Jira: {msg}")
+                        self._populate_tkt_filters()
+                    else:
+                        self.status_label.setText(f"Jira: {msg}")
                 else:
-                    self.status_label.setText(f"Jira: {msg}")
+                    self.status_label.setText("Aggiornamento Jira saltato")
             else:
                 self.status_label.setText("Credenziali Jira non configurate — usa Importa Excel o configura .env")
 
@@ -695,11 +698,11 @@ class MainWindow(QMainWindow):
         jb = QPushButton("Jira Selezionati"); jb.setObjectName("jira"); jb.clicked.connect(self._jira_from_alerts); flt.addWidget(jb)
         jbl = QPushButton("Jira da Lista"); jbl.setObjectName("jira"); jbl.clicked.connect(self._jira_from_list); flt.addWidget(jbl)
         cb = QPushButton("Pulisci Filtri"); cb.setObjectName("secondary"); cb.clicked.connect(self._clear_alert_filters); flt.addWidget(cb); layout.addLayout(flt)
-        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Onesait","Descrizione","Ticket"]
+        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","Mongo","Batt","Porta","Sotto C.","Onesait","Descrizione","Ticket"]
         self.alert_table = FilterableTable(cols)
         self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,130); self.alert_table.table.setColumnWidth(2,100); self.alert_table.table.setColumnWidth(3,60); self.alert_table.table.setColumnWidth(4,55); self.alert_table.table.setColumnWidth(5,60)
-        for i in range(6,11): self.alert_table.table.setColumnWidth(i,45)
-        self.alert_table.table.setColumnWidth(11,50); self.alert_table.table.setColumnWidth(12,80); self.alert_table.table.setColumnWidth(13,280)
+        for i in range(6,9): self.alert_table.table.setColumnWidth(i,45)
+        self.alert_table.table.setColumnWidth(9,50); self.alert_table.table.setColumnWidth(10,80); self.alert_table.table.setColumnWidth(11,280)
         self.alert_table.table.doubleClicked.connect(self._on_alert_dblclick); layout.addWidget(self.alert_table); return tab
 
     def _toggle_alert_nt(self):
@@ -720,7 +723,7 @@ class MainWindow(QMainWindow):
             for row in sel:
                 did = row.get("_full_did",""); d = session.get(Device, did); td = dict(row); td["_full_did"] = did
                 if d:
-                    for k,a in [("tipo_malf","tipo_malfunzionamento"),("tipo_malf_jira","tipo_malf_jira"),("cluster_jira","cluster_jira"),("note","note"),("lte","check_lte"),("ssh","check_ssh"),("mongo","check_mongo"),("batteria","batteria"),("porta","porta_aperta")]: td[k] = getattr(d, a, None)
+                    for k,a in [("tipo_malf","tipo_malfunzionamento"),("tipo_malf_jira","tipo_malf_jira"),("cluster_jira","cluster_jira"),("note","note"),("mongo","check_mongo"),("batteria","batteria"),("porta","porta_aperta")]: td[k] = getattr(d, a, None)
                 enriched.append(td)
         finally: session.close()
         JiraTicketDialog(enriched, self).exec_()
@@ -737,11 +740,11 @@ class MainWindow(QMainWindow):
         jb2 = QPushButton("Jira Selezionati"); jb2.setObjectName("jira"); jb2.clicked.connect(self._jira_from_devices); flt.addWidget(jb2)
         jbl2 = QPushButton("Jira da Lista"); jbl2.setObjectName("jira"); jbl2.clicked.connect(self._jira_from_list); flt.addWidget(jbl2)
         cb2 = QPushButton("Pulisci Filtri"); cb2.setObjectName("secondary"); cb2.clicked.connect(self._clear_dev_filters); flt.addWidget(cb2); layout.addLayout(flt)
-        cols = ["DeviceID","Linea","Fornitore","Tipo","DT","Health","LTE","SSH","Mongo","Batt","Porta","Sotto C.","Trend","Giorni","Malf.","Ticket"]
+        cols = ["DeviceID","Linea","Fornitore","Tipo","DT","Health","Mongo","Batt","Porta","Sotto C.","Trend","Giorni","Malf.","Ticket"]
         self.dev_table = FilterableTable(cols)
         self.dev_table.table.setColumnWidth(0,100); self.dev_table.table.setColumnWidth(1,70); self.dev_table.table.setColumnWidth(2,60); self.dev_table.table.setColumnWidth(3,48); self.dev_table.table.setColumnWidth(4,50)
-        for i in range(5,12): self.dev_table.table.setColumnWidth(i,48)
-        self.dev_table.table.setColumnWidth(12,60); self.dev_table.table.setColumnWidth(13,42)
+        for i in range(5,10): self.dev_table.table.setColumnWidth(i,48)
+        self.dev_table.table.setColumnWidth(10,60); self.dev_table.table.setColumnWidth(11,42)
         self.dev_table.table.doubleClicked.connect(self._on_dev_dblclick); layout.addWidget(self.dev_table); return tab
 
     def _toggle_dev_nt(self):
@@ -762,7 +765,7 @@ class MainWindow(QMainWindow):
             for row in sel:
                 did = row.get("_full_did",""); d = session.get(Device, did); td = dict(row); td["_full_did"] = did
                 if d:
-                    for k,a in [("tipo_malf","tipo_malfunzionamento"),("tipo_malf_jira","tipo_malf_jira"),("cluster_jira","cluster_jira"),("note","note"),("lte","check_lte"),("ssh","check_ssh"),("mongo","check_mongo"),("batteria","batteria"),("porta","porta_aperta")]: td[k] = getattr(d, a, None)
+                    for k,a in [("tipo_malf","tipo_malfunzionamento"),("tipo_malf_jira","tipo_malf_jira"),("cluster_jira","cluster_jira"),("note","note"),("mongo","check_mongo"),("batteria","batteria"),("porta","porta_aperta")]: td[k] = getattr(d, a, None)
                 enriched.append(td)
         finally: session.close()
         JiraTicketDialog(enriched, self).exec_()
@@ -786,7 +789,7 @@ class MainWindow(QMainWindow):
                         "_full_did": d.device_id, "DeviceID": d.device_id,
                         "tipo_malf": d.tipo_malfunzionamento, "tipo_malf_jira": d.tipo_malf_jira,
                         "cluster_jira": d.cluster_jira, "note": d.note,
-                        "lte": d.check_lte, "ssh": d.check_ssh, "mongo": d.check_mongo,
+                        "mongo": d.check_mongo,
                         "batteria": d.batteria, "porta": d.porta_aperta,
                     }
                     enriched.append(td)
@@ -811,7 +814,7 @@ class MainWindow(QMainWindow):
         gf = QGroupBox("Stato per Fornitore"); fl = QVBoxLayout(); fl.addWidget(self.ov_forn_table); gf.setLayout(fl); ccl.addWidget(gf)
         self.ov_dt_table = QTableWidget(); self.ov_dt_table.setColumnCount(5); self.ov_dt_table.setHorizontalHeaderLabels(["DT","Totale","OK","KO","% OK"]); self.ov_dt_table.horizontalHeader().setStretchLastSection(True)
         gdt = QGroupBox("Stato per DT"); dtl = QVBoxLayout(); dtl.addWidget(self.ov_dt_table); gdt.setLayout(dtl); ccl.addWidget(gdt)
-        self.ov_corr_table = QTableWidget(); self.ov_corr_table.setColumnCount(8); self.ov_corr_table.setHorizontalHeaderLabels(["Fornitore","Totale","LTE KO","SSH KO","Mongo KO","Porta KO","Batt KO","Disconnessi"]); self.ov_corr_table.horizontalHeader().setStretchLastSection(True)
+        self.ov_corr_table = QTableWidget(); self.ov_corr_table.setColumnCount(5); self.ov_corr_table.setHorizontalHeaderLabels(["Fornitore","Totale","Mongo KO","Porta KO","Batt KO"]); self.ov_corr_table.horizontalHeader().setStretchLastSection(True)
         gc = QGroupBox("Correlazione Diagnostica"); gcl = QVBoxLayout(); gcl.addWidget(self.ov_corr_table); gc.setLayout(gcl); ccl.addWidget(gc)
         # Tabella Jira ticket per fornitore con L3/L4
         self.ov_jira_table = QTableWidget(); self.ov_jira_table.setColumnCount(7)
@@ -999,12 +1002,12 @@ class MainWindow(QMainWindow):
                         best[did] = (event, device)
             data = []
             for event, device in best.values():
-                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"LTE":device.check_lte or "-","SSH":device.check_ssh or "-","Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
+                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
                 elif col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
-                elif col in ("LTE","SSH","Mongo","Batt","Porta"): return check_item(val)
+                elif col in ("Mongo","Batt","Porta"): return check_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Onesait" and val != "-": return colored_item(val, "#FFF3E0", "#E65100")
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
@@ -1033,12 +1036,12 @@ class MainWindow(QMainWindow):
             data = []
             for d in q.all():
                 sd = d.sistema_digil or ""; ts = "M" if "master" in sd else "S" if "slave" in sd else "?"
-                data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","LTE":d.check_lte or "-","SSH":d.check_ssh or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
+                data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
             def rd(row, col):
                 val = row.get(col, "")
                 if col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col == "Health": return colored_item(val, HEALTH_BG.get(val,""), bold=True)
-                elif col in ("LTE","SSH","Mongo","Batt","Porta"): return check_item(val)
+                elif col in ("Mongo","Batt","Porta"): return check_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
                 elif col == "Ticket" and val != "-": return colored_item(val, "#FFEBEE", "#C62828")
@@ -1065,7 +1068,7 @@ class MainWindow(QMainWindow):
             for i, f in enumerate(fornitori):
                 devs = session.query(Device).filter(Device.fornitore==f).all(); total = len(devs)
                 self.ov_corr_table.setItem(i,0,colored_item(f,bold=True)); self.ov_corr_table.setItem(i,1,colored_item(total))
-                self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_lte=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.check_ssh=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,5,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,6,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True)); self.ov_corr_table.setItem(i,7,colored_item(sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO"),"#FFEBEE","#C62828",True))
+                self.ov_corr_table.setItem(i,2,colored_item(sum(1 for d in devs if d.check_mongo=="KO"),bold=True)); self.ov_corr_table.setItem(i,3,colored_item(sum(1 for d in devs if d.porta_aperta=="KO"),bold=True)); self.ov_corr_table.setItem(i,4,colored_item(sum(1 for d in devs if d.batteria=="KO"),bold=True))
             self.ov_corr_table.resizeRowsToContents()
             # Jira ticket per fornitore con L3/L4
             try:
@@ -1105,7 +1108,9 @@ class MainWindow(QMainWindow):
             pass
 
     def _auto_refresh_jira(self):
-        """Auto-refresh ticket Jira ogni ora."""
+        """Auto-refresh ticket Jira ogni ora, con conferma utente."""
+        reply = QMessageBox.question(self, "Aggiornamento Jira", "Vuoi aggiornare i ticket Jira?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes: return
         ok, msg = download_from_jira()
         if ok:
             self.status_label.setText(f"Jira aggiornato: {msg}")
@@ -1217,7 +1222,7 @@ class MainWindow(QMainWindow):
             cd = []
             for f in ["INDRA","MII","SIRTI"]:
                 devs = session.query(Device).filter(Device.fornitore==f).all(); t = len(devs)
-                cd.append({"Fornitore":f,"Totale":t,"LTE KO":sum(1 for d in devs if d.check_lte=="KO"),"SSH KO":sum(1 for d in devs if d.check_ssh=="KO"),"Mongo KO":sum(1 for d in devs if d.check_mongo=="KO"),"Porta KO":sum(1 for d in devs if d.porta_aperta=="KO"),"Batt KO":sum(1 for d in devs if d.batteria=="KO"),"Disconnessi":sum(1 for d in devs if d.check_lte=="KO" and d.check_ssh=="KO")})
+                cd.append({"Fornitore":f,"Totale":t,"Mongo KO":sum(1 for d in devs if d.check_mongo=="KO"),"Porta KO":sum(1 for d in devs if d.porta_aperta=="KO"),"Batt KO":sum(1 for d in devs if d.batteria=="KO")})
             with pd.ExcelWriter(fp, engine='xlsxwriter') as w:
                 pd.DataFrame(fd).to_excel(w, index=False, sheet_name='Stato Fornitore'); pd.DataFrame(dd).to_excel(w, index=False, sheet_name='Stato DT'); pd.DataFrame(cd).to_excel(w, index=False, sheet_name='Correlazione')
                 # Sheet Jira per Fornitore e Livello

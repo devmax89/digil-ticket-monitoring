@@ -61,7 +61,6 @@ class AlertGenerator:
                 self._rule_intermittent(session, device, avail)
                 self._rule_ko_no_ticket(session, device, avail)
                 self._rule_open_ticket_ok(session, device, avail)
-                self._rule_connectivity_lost(session, device)
                 self._rule_door_alarm(session, device)
                 self._rule_battery_alarm(session, device)
                 self._rule_no_data(session, device, avail)
@@ -132,11 +131,6 @@ class AlertGenerator:
             else: break
         if ok_days < 5: return
         self._add(s, d, "OPEN_TICKET_OK", "LOW", f"OK da {ok_days} giorni ma ticket {d.ticket_id} ancora aperto")
-
-    def _rule_connectivity_lost(self, s, d):
-        if d.check_lte != "KO" or d.check_ssh != "KO" or _has_active_ticket_or_jira(d, s): return
-        self._add(s, d, "CONNECTIVITY_LOST", "HIGH",
-                  f"Disconnesso (LTE=KO, SSH=KO, Mongo={d.check_mongo or '?'}) — Nessun ticket attivo")
 
     def _rule_door_alarm(self, s, d):
         if d.porta_aperta != "KO": return

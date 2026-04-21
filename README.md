@@ -30,7 +30,7 @@ Al primo avvio, clicca **Importa Excel** e seleziona il file `Monitoraggio_APPAR
 
 Il tool legge due sheet dal file Excel di monitoraggio:
 
-**Sheet "Stato"** (fonte primaria, ~987 righe): contiene l'anagrafica completa di ogni dispositivo (linea, sostegno, fornitore, DT, IP, tipo installazione), i check diagnostici (LTE, SSH, MongoDB, batteria, porta), le informazioni su malfunzionamenti e ticket, e le colonne storiche di availability (formato "AVAILABILITY DD mmm", es. "AVAILABILITY 17 dic").
+**Sheet "Stato"** (fonte primaria, ~987 righe): contiene l'anagrafica completa di ogni dispositivo (linea, sostegno, fornitore, DT, IP, tipo installazione), i check diagnostici (MongoDB, batteria, porta), le informazioni su malfunzionamenti e ticket, e le colonne storiche di availability (formato "AVAILABILITY DD mmm", es. "AVAILABILITY 17 dic").
 
 **Sheet "Av Status"** (~1029 righe): contiene l'availability giornaliera recente con codici numerici per gli ultimi 5 giorni circa.
 
@@ -64,7 +64,7 @@ Nella timeline del dettaglio device, ogni quadrato è colorato secondo il suo st
 
 - **OK**: availability OK e nessuna diagnostica critica
 - **KO**: availability KO
-- **DEGRADED**: availability OK ma diagnostiche in allarme (LTE KO o porta aperta)
+- **DEGRADED**: availability OK ma diagnostiche in allarme (porta aperta)
 - **UNKNOWN**: nessun dato
 
 ### Trend 7 giorni
@@ -89,17 +89,13 @@ Installazione senza sensori di tiro. Badge **SC**. Non genera alert su sensori a
 
 | Check | Significato |
 |-------|------------|
-| **LTE** | Connettività cellulare |
-| **SSH** | Accesso remoto |
 | **Mongo** | Invio dati telemetria a MongoDB |
 | **Batteria** | Stato batteria |
 | **Porta** | Sensore porta quadro |
 
-LTE + SSH entrambi KO = **disconnesso**.
-
 ---
 
-## Sistema di Alert (9 regole)
+## Sistema di Alert (8 regole)
 
 | Severity | Colore | Significato |
 |----------|--------|------------|
@@ -108,17 +104,16 @@ LTE + SSH entrambi KO = **disconnesso**.
 | **MEDIUM** | Giallo | Da monitorare |
 | **LOW** | Verde | Informativo |
 
-### Le 9 regole
+### Le 8 regole
 
 1. **KO_NO_TICKET** — KO da 3+ giorni senza ticket attivo (Aperto/Interno). CRITICAL ≥7gg, HIGH 3-6gg. Sotto corona con Mongo OK → LOW.
 2. **NEW_KO** — Passaggio da OK (2+ gg) a KO. HIGH senza ticket, MEDIUM con ticket.
-3. **CONNECTIVITY_LOST** — LTE=KO + SSH=KO senza ticket attivo. HIGH.
-4. **DOOR_ALARM** — Porta KO senza ticket specifico. MEDIUM/LOW.
-5. **BATTERY_ALARM** — Batteria KO. HIGH/MEDIUM.
-6. **INTERMITTENT** — 3+ cambi stato in 7 giorni. MEDIUM.
-7. **RECOVERED** — Tornato OK dopo 2+ giorni KO. LOW.
-8. **OPEN_TICKET_OK** — OK da 5+ giorni con ticket ancora aperto. LOW.
-9. **NO_DATA** — Ultimo giorno di availability = NO DATA (il dispositivo non comunica misure). MEDIUM se 1-4 giorni, HIGH se 5+ giorni. Solo senza ticket attivo.
+3. **DOOR_ALARM** — Porta KO senza ticket specifico. MEDIUM/LOW.
+4. **BATTERY_ALARM** — Batteria KO. HIGH/MEDIUM.
+5. **INTERMITTENT** — 3+ cambi stato in 7 giorni. MEDIUM.
+6. **RECOVERED** — Tornato OK dopo 2+ giorni KO. LOW.
+7. **OPEN_TICKET_OK** — OK da 5+ giorni con ticket ancora aperto. LOW.
+8. **NO_DATA** — Ultimo giorno di availability = NO DATA (il dispositivo non comunica misure). MEDIUM se 1-4 giorni, HIGH se 5+ giorni. Solo senza ticket attivo.
 
 ### Logica Ticket Attivi
 
@@ -151,7 +146,7 @@ Dalla tab Alert o Dispositivi:
 |------|---------|
 | Festa Rosa | 60705508126db9006f3be9e8 |
 | Massimiliano Tavernese | 5e8ae84a84dec20b8159e37a |
-| Paolo Marino | 712020:18a68569-e00b-414c-bd78-2ef0e43c0534 |
+| Matteo Massarotto | 712020:166aab81-574f-4eff-8eb0-c2ba527b79bf |
 | Vittorio Mitri | 5e86f312b39dbf0c114bdefa |
 | Team AMS | 622f434533fb840069656a1a |
 

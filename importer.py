@@ -167,8 +167,6 @@ class ExcelImporter:
             device.fornitore = normalize_fornitore(row.get("Fornitore"))
             device.data_install = safe_date(row.get("Data Installazione Digil"))
             device.da_file_master = safe_str(row.get("Da file master"))
-            device.check_lte = safe_str(row.get("Check LTE"))
-            device.check_ssh = safe_str(row.get("check SSH"))
             device.batteria = safe_str(row.get("Batteria"))
             device.porta_aperta = safe_str(row.get("Porta aperta"))
             device.check_mongo = safe_str(row.get("Check Mongo"))
@@ -300,7 +298,7 @@ class ExcelImporter:
                 else: break
             device.days_in_current = days
             if latest.norm_status == "OK":
-                device.current_health = "DEGRADED" if (device.check_lte == "KO" or device.porta_aperta == "KO") else "OK"
+                device.current_health = "DEGRADED" if device.porta_aperta == "KO" else "OK"
             else:
                 device.current_health = "KO"
         session.commit()

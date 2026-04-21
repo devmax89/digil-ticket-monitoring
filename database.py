@@ -47,8 +47,6 @@ class Device(Base):
     data_install = Column(Date)
     da_file_master = Column(String)
     misure_mancanti = Column(Text)
-    check_lte = Column(String)
-    check_ssh = Column(String)
     batteria = Column(String)
     porta_aperta = Column(String)
     check_mongo = Column(String)
