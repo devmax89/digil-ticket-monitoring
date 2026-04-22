@@ -2,16 +2,14 @@
 DIGIL Monitoring - Jira Client
 Scarica ticket dal progetto IA20 e li salva nel DB locale.
 """
-import re, os, json
+import re, os, json, requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from database import get_session, init_db, Device
 
-try:
-    from jira import JIRA
-    HAS_JIRA = True
-except ImportError:
-    HAS_JIRA = False
+# Retrocompatibilità: HAS_JIRA era True se la libreria jira era installata.
+# Ora usiamo requests direttamente, quindi è sempre True.
+HAS_JIRA = True
 
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, Date, DateTime, Text, Index
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -242,15 +240,18 @@ CUSTOM_FIELD_NAMES = [
 
 _custom_field_cache = {}
 
-def _discover_custom_fields(jira) -> dict:
-    """Scopre automaticamente gli ID dei custom fields da Jira.
+def _discover_custom_fields(jira_url, email, token) -> dict:
+    """Scopre automaticamente gli ID dei custom fields da Jira (API v3).
     Ritorna un dict {nome_campo: customfield_XXXXX}.
     Risultati cachati per la sessione."""
     global _custom_field_cache
     if _custom_field_cache:
         return _custom_field_cache
     try:
-        all_fields = jira.fields()
+        url = f"{jira_url.rstrip('/')}/rest/api/3/field"
+        resp = requests.get(url, auth=(email, token))
+        resp.raise_for_status()
+        all_fields = resp.json()
         name_to_id = {}
         for field in all_fields:
             name = field.get("name", "")
@@ -279,11 +280,12 @@ def _get_custom_field(fields, field_map: dict, field_name: str) -> str:
         # Jira custom fields possono essere: stringa, dict con value, oggetto con .value/.name
         if isinstance(val, str):
             return val.strip()
-        if isinstance(val, dict):
-            return str(val.get("value", val.get("name", ""))).strip()
-        if hasattr(val, 'value'):
+        if isinstance(val, (dict, _AttrDict)):
+            raw = val._data if isinstance(val, _AttrDict) else val
+            return str(raw.get("value", raw.get("name", ""))).strip()
+        if hasattr(val, 'value') and val.value is not None:
             return str(val.value).strip()
-        if hasattr(val, 'name'):
+        if hasattr(val, 'name') and val.name is not None:
             return str(val.name).strip()
         return str(val).strip()
     except Exception:
@@ -291,30 +293,145 @@ def _get_custom_field(fields, field_map: dict, field_name: str) -> str:
 
 
 # ============================================================
+# JIRA API v3 SEARCH (migrazione da /rest/api/2/search)
+# ============================================================
+class JiraError(Exception):
+    pass
+
+
+class _AttrDict:
+    """Wrapper che permette accesso ad attributi come la libreria jira."""
+    def __init__(self, data):
+        self._data = data
+    def __getattr__(self, name):
+        try:
+            val = self._data[name]
+        except KeyError:
+            return None
+        if isinstance(val, dict):
+            return _AttrDict(val)
+        if isinstance(val, list):
+            return [_AttrDict(v) if isinstance(v, dict) else v for v in val]
+        return val
+    def __bool__(self):
+        return bool(self._data)
+
+
+class _JiraIssue:
+    """Simula un issue della libreria jira a partire dal JSON API v3."""
+    def __init__(self, data):
+        self.key = data["key"]
+        self.fields = _AttrDict(data.get("fields", {}))
+
+
+def _search_issues_v3(jira_url, email, token, jql):
+    """Esegue la ricerca ticket via REST API v3 (/rest/api/3/search/jql).
+    Gestisce la paginazione e ritorna una lista di _JiraIssue."""
+    url = f"{jira_url.rstrip('/')}/rest/api/3/search/jql"
+    auth = (email, token)
+    all_issues = []
+    start_at = 0
+    max_results = 100
+    while True:
+        params = {
+            "jql": jql,
+            "startAt": start_at,
+            "maxResults": max_results,
+            "fields": "*all",
+        }
+        resp = requests.get(url, params=params, auth=auth)
+        if resp.status_code == 410:
+            raise JiraError(
+                f"JiraError HTTP 410: L'API richiesta è stata rimossa. "
+                f"Verifica l'endpoint: {url}"
+            )
+        if resp.status_code != 200:
+            raise JiraError(
+                f"JiraError HTTP {resp.status_code} uri: {url}\n"
+                f"response text = {resp.text[:500]}"
+            )
+        data = resp.json()
+        issues = data.get("issues", [])
+        for issue_data in issues:
+            all_issues.append(_JiraIssue(issue_data))
+        total = data.get("total", 0)
+        start_at += len(issues)
+        if start_at >= total or not issues:
+            break
+    return all_issues
+
+
+def _adf_to_text(adf):
+    """Converte Atlassian Document Format (ADF) in testo semplice."""
+    if not adf or not isinstance(adf, dict):
+        return str(adf) if adf else ""
+    parts = []
+    for node in adf.get("content", []):
+        if node.get("type") == "paragraph":
+            for inline in node.get("content", []):
+                if inline.get("type") == "text":
+                    parts.append(inline.get("text", ""))
+                elif inline.get("type") == "mention":
+                    parts.append(inline.get("attrs", {}).get("text", ""))
+            parts.append("\n")
+        elif node.get("type") == "codeBlock":
+            for inline in node.get("content", []):
+                parts.append(inline.get("text", ""))
+            parts.append("\n")
+        elif node.get("type") in ("bulletList", "orderedList"):
+            for item in node.get("content", []):
+                for para in item.get("content", []):
+                    for inline in para.get("content", []):
+                        if inline.get("type") == "text":
+                            parts.append("• " + inline.get("text", ""))
+                parts.append("\n")
+    return "".join(parts).strip()
+
+
+def _get_comments_v3(jira_url, email, token, issue_key):
+    """Scarica i commenti di un issue via REST API v3."""
+    url = f"{jira_url.rstrip('/')}/rest/api/3/issue/{issue_key}/comment"
+    try:
+        resp = requests.get(url, auth=(email, token))
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data.get("comments", [])
+    except Exception:
+        return []
+
+
+# ============================================================
 # DOWNLOAD DA JIRA API
 # ============================================================
 def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlassian.net", project="IA20"):
     """Scarica tutti i ticket Bug in esercizio da Jira e li salva nel DB."""
-    if not HAS_JIRA:
-        return False, "Libreria 'jira' non installata. Esegui: pip install jira"
+    if requests is None:
+        return False, "Libreria 'requests' non installata. Esegui: pip install requests"
 
     if not email or not token:
         email, token = _load_credentials()
     if not email or not token:
         return False, "Credenziali Jira mancanti — crea file .env nella cartella del tool"
 
+    # Verifica connessione
     try:
-        jira = JIRA(server=jira_url, basic_auth=(email, token))
+        test_resp = requests.get(
+            f"{jira_url.rstrip('/')}/rest/api/3/myself",
+            auth=(email, token),
+        )
+        if test_resp.status_code != 200:
+            return False, f"Connessione fallita: HTTP {test_resp.status_code}"
     except Exception as e:
         return False, f"Connessione fallita: {e}"
 
     # Auto-discover custom field IDs
-    custom_field_map = _discover_custom_fields(jira)
+    custom_field_map = _discover_custom_fields(jira_url, email, token)
 
     jql = f'project = {project} AND type = "Bug in esercizio" ORDER BY created DESC'
     try:
-        issues = list(jira.search_issues(jql, maxResults=False))
-    except Exception as e:
+        issues = _search_issues_v3(jira_url, email, token, jql)
+    except JiraError as e:
         return False, f"Query fallita: {e}"
 
     init_jira_db()
@@ -328,14 +445,21 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             device_id = extract_device_id(summary)
             fornitore = extract_fornitore(device_id)
 
-            # Comments
+            # Comments (API v3)
             comments_str = ""
             try:
-                comments = jira.comments(key)
-                if comments:
+                comments_data = _get_comments_v3(jira_url, email, token, key)
+                if comments_data:
                     parts = []
-                    for c in comments:
-                        parts.append(f"[{c.created[:19]}] {c.author.displayName}:\n{c.body}")
+                    for c in comments_data:
+                        author = c.get("author", {}).get("displayName", "")
+                        created = c.get("created", "")[:19]
+                        # API v3 usa ADF (Atlassian Document Format) per body
+                        body = c.get("body", "")
+                        if isinstance(body, dict):
+                            # Estrai testo da ADF
+                            body = _adf_to_text(body)
+                        parts.append(f"[{created}] {author}:\n{body}")
                     comments_str = "\n---\n".join(parts)
             except Exception:
                 pass
@@ -343,12 +467,13 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             # Issue Links
             links_str = ""
             try:
-                if hasattr(f, 'issuelinks') and f.issuelinks:
+                issue_links = f.issuelinks
+                if issue_links:
                     links = []
-                    for link in f.issuelinks:
-                        if hasattr(link, 'outwardIssue'):
+                    for link in issue_links:
+                        if link.outwardIssue:
                             links.append(f"{link.type.outward}: {link.outwardIssue.key}")
-                        elif hasattr(link, 'inwardIssue'):
+                        elif link.inwardIssue:
                             links.append(f"{link.type.inward}: {link.inwardIssue.key}")
                     links_str = ", ".join(links)
             except Exception:
@@ -360,7 +485,13 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
                 session.add(ticket)
 
             ticket.summary = summary
-            ticket.description = f.description or ""
+            # API v3: description può essere ADF (dict) o stringa
+            desc_raw = f.description
+            if isinstance(desc_raw, dict):
+                desc_raw = _adf_to_text(desc_raw)
+            elif isinstance(desc_raw, _AttrDict):
+                desc_raw = _adf_to_text(desc_raw._data)
+            ticket.description = desc_raw or ""
             ticket.issue_type = f.issuetype.name if f.issuetype else ""
             ticket.status = f.status.name if f.status else ""
             ticket.resolution = f.resolution.name if f.resolution else "Unresolved"
@@ -369,7 +500,7 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
             ticket.reporter = f.reporter.displayName if f.reporter else ""
             ticket.labels = ", ".join(f.labels) if f.labels else ""
             ticket.url = f"{jira_url}/browse/{key}"
-            ticket.num_comments = len(jira.comments(key)) if comments_str else 0
+            ticket.num_comments = len(comments_data) if comments_str else 0
             ticket.comments = comments_str or "Nessun commento"
             ticket.issue_links = links_str or "Nessun link"
             ticket.device_id = device_id
