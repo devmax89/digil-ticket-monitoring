@@ -65,6 +65,7 @@ class AlertGenerator:
                 self._rule_battery_alarm(session, device)
                 self._rule_no_data(session, device, avail)
                 self._rule_no_data_l3(session, device)
+                self._rule_missing_metrics(session, device)
             session.commit()
             return self.count
         finally: session.close()
@@ -196,6 +197,39 @@ class AlertGenerator:
         self._add(s, d, "NO_DATA_L3", sev,
                   f"Dati fermi su Onesait — Onesait:{d.data_onesait} vs Mongo:{data_confronto} (delta {delta}gg)",
                   {"onesait": str(d.data_onesait), "mongo": str(data_confronto), "delta_days": delta})
+
+
+    def _rule_missing_metrics(self, s, d):
+        """PARTIAL_DATA / LIMITED_DATA: device NON sotto corona che invia meno misure.
+        BUONA DISPONIBILITÀ → mancano metriche non critiche (PARTIAL_DATA).
+        DISPONIBILITÀ LIMITATA → manca almeno una metrica rilevante (LIMITED_DATA).
+        Salta se c'è ticket attivo (locale o Jira). Alert generato anche con ticket chiuso o assente.
+        """
+        if d.is_sotto_corona: return
+        status = (d.last_avail_status or "").strip().upper()
+        is_buona = "BUONA" in status
+        is_limitata = "LIMITATA" in status
+        if not (is_buona or is_limitata): return
+        if _has_active_ticket_or_jira(d, s): return
+        metrics = d.misure_mancanti or ""
+        days_since = None
+        if d.last_complete_date and d.last_complete_date.year >= 2020:
+            days_since = (self.target_date - d.last_complete_date).days
+        old = days_since is not None and days_since >= 14
+        if is_limitata:
+            event_type = "LIMITED_DATA"
+            sev = "HIGH" if old else "MEDIUM"
+            label = "Disponibilità limitata"
+        else:
+            event_type = "PARTIAL_DATA"
+            sev = "MEDIUM" if old else "LOW"
+            label = "Buona disponibilità"
+        metrics_short = metrics if len(metrics) <= 120 else metrics[:117] + "..."
+        suffix = f" — ultima completa {d.last_complete_date}" if d.last_complete_date and d.last_complete_date.year >= 2020 else ""
+        desc = f"{label} — manca: {metrics_short or '(lista non disponibile)'}{suffix}"
+        self._add(s, d, event_type, sev, desc,
+                  {"metrics": metrics, "last_complete": str(d.last_complete_date) if d.last_complete_date else None,
+                   "days_since_complete": days_since, "status": d.last_avail_status})
 
 
 def run_detection(target_date=None) -> int:

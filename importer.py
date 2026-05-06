@@ -120,19 +120,26 @@ class ExcelImporter:
         init_db()
         session = get_session()
         try:
-            print("[1/5] Lettura sheet 'Stato'...")
+            print("[1/6] Lettura sheet 'Stato'...")
             df_stato = pd.read_excel(self.file_path, sheet_name='Stato', engine='openpyxl', header=1)
             print(f"       {len(df_stato)} righe")
-            print("[2/5] Lettura sheet 'Av Status'...")
+            print("[2/6] Lettura sheet 'Av Status'...")
             df_av = pd.read_excel(self.file_path, sheet_name='Av Status', engine='openpyxl')
             print(f"       {len(df_av)} righe")
-            print("[3/5] Import dispositivi e availability...")
+            print("[3/6] Import dispositivi e availability...")
             self._import_devices(session, df_stato)
             self._import_availability_stato(session, df_stato)
             self._import_availability_av_status(session, df_av)
-            print("[4/5] Aggiornamento storico ticket...")
+            print("[4/6] Lettura sheet 'Availability' (misure mancanti)...")
+            try:
+                df_availability = pd.read_excel(self.file_path, sheet_name='Availability', engine='openpyxl')
+                self._import_missing_metrics(session, df_availability)
+                print(f"       {len(df_availability)} righe, {self.stats.get('missing_metrics_devices', 0)} device con metriche mancanti")
+            except Exception as e:
+                print(f"       Sheet 'Availability' non disponibile: {e}")
+            print("[5/6] Aggiornamento storico ticket...")
             self._update_ticket_history(session)
-            print("[5/5] Calcolo trend e stati...")
+            print("[6/6] Calcolo trend e stati...")
             self._compute_derived_states(session)
             log = ImportLog(filename=self.file_path.name, devices_total=self.stats["devices_imported"], status="OK")
             session.add(log); session.commit()
@@ -279,6 +286,42 @@ class ExcelImporter:
                     self.stats["availability_records"] += 1
                 else: existing.raw_status = raw_status; existing.norm_status = norm_status
         if skipped: print(f"       {skipped} record Av Status ignorati (device non in Stato)")
+        session.flush()
+
+    def _import_missing_metrics(self, session, df_av):
+        """Sheet 'Availability': snapshot per-device con metriche mancanti e data ultima
+        DISPONIBILITÀ COMPLETA. Popola Device.misure_mancanti + Device.last_complete_date.
+        """
+        known_ids = {d.device_id for d in session.query(Device.device_id).all()}
+        # Identifica colonne in modo flessibile
+        col_did = next((c for c in df_av.columns if str(c).strip().lower() in ("device id","deviceid")), df_av.columns[0])
+        col_metric = next((c for c in df_av.columns if "metric" in str(c).lower()), None)
+        col_last_complete = next((c for c in df_av.columns if "ultimo" in str(c).lower() and "completa" in str(c).lower()), None)
+        count = 0
+        # Azzera metriche su tutti i device noti prima di ripopolare (lo snapshot copre tutto il parco)
+        for d in session.query(Device).all():
+            d.misure_mancanti = None
+        for _, row in df_av.iterrows():
+            did = safe_str(row.get(col_did))
+            if not did or did not in known_ids: continue
+            device = session.get(Device, did)
+            if device is None: continue
+            metrics_raw = safe_str(row.get(col_metric)) if col_metric else None
+            if metrics_raw:
+                parts = [p.strip() for p in re.split(r'[,;\s]+', metrics_raw) if p.strip()]
+                device.misure_mancanti = ", ".join(parts) if parts else None
+                if parts: count += 1
+            if col_last_complete is not None:
+                raw = row.get(col_last_complete)
+                lc = None
+                if raw is not None and not pd.isna(raw):
+                    if isinstance(raw, (datetime, date)):
+                        lc = raw.date() if isinstance(raw, datetime) else raw
+                    else:
+                        try: lc = pd.to_datetime(str(raw), dayfirst=True).date()
+                        except Exception: lc = None
+                device.last_complete_date = lc
+        self.stats["missing_metrics_devices"] = count
         session.flush()
 
     def _compute_derived_states(self, session):

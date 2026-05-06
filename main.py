@@ -431,6 +431,18 @@ class DeviceDetailDialog(QDialog):
             if device.last_avail_status:
                 av_bg = avail_color(device.last_avail_status)
                 cl.addWidget(QLabel(f"<b>Ultimo availability:</b> {device.last_avail_status} ({device.last_avail_date})").setStyleSheet(f"padding:4px 8px;border-left:4px solid {av_bg};background:#FAFAFA;") or QLabel(f"<b>Ultimo availability:</b> {device.last_avail_status} ({device.last_avail_date})"))
+            if device.misure_mancanti:
+                mm_box = QVBoxLayout()
+                metrics = [m.strip() for m in device.misure_mancanti.split(",") if m.strip()]
+                top_line = QLabel(f"<b>{len(metrics)} metriche non in arrivo</b>")
+                mm_box.addWidget(top_line)
+                chips = QLabel("  ".join(f"<span style='background:#FFF3E0;color:#E65100;padding:2px 6px;border-radius:3px;'>{m}</span>" for m in metrics))
+                chips.setWordWrap(True); chips.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                mm_box.addWidget(chips)
+                if device.last_complete_date and device.last_complete_date.year >= 2020:
+                    days = (date.today() - device.last_complete_date).days
+                    mm_box.addWidget(QLabel(f"<small>Ultima DISPONIBILITÀ COMPLETA: <b>{device.last_complete_date}</b> ({days} giorni fa)</small>"))
+                gmm = QGroupBox("Metriche Mancanti"); gmm.setLayout(mm_box); cl.addWidget(gmm)
             malf = [("Tipo",device.tipo_malfunzionamento),("Cluster",device.cluster_analisi),("Analisi",device.analisi_malfunzionamento),("Intervento",device.tipologia_intervento),("Strategia",device.strategia_risolutiva),("Cause",device.cause_anomalie),("Risoluzione",device.risoluzione_attuata),("Note",device.note)]
             if any(v for _,v in malf):
                 mg = QGridLayout(); mg.setSpacing(4); mr = 0
@@ -486,7 +498,11 @@ class DeviceDetailDialog(QDialog):
         finally: session.close()
 
     def _copy_info(self, device, session):
-        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}","","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
+        lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}"]
+        if device.misure_mancanti:
+            lines += ["","--- Misure Mancanti ---", f"Metriche: {device.misure_mancanti}"]
+            if device.last_complete_date: lines.append(f"Ultima Disp. Completa: {device.last_complete_date}")
+        lines += ["","--- Ticket ---",f"Ticket: {device.ticket_id or 'Nessuno'}",f"Stato: {device.ticket_stato or '-'}",f"Apertura: {device.ticket_data_apertura or '-'}",f"Risoluzione: {device.ticket_data_risoluzione or '-'}"]
         if device.tipo_malfunzionamento: lines += ["","--- Malfunzionamento ---",f"Tipo: {device.tipo_malfunzionamento}",f"Cluster: {device.cluster_analisi or '-'}",f"Analisi: {device.analisi_malfunzionamento or '-'}",f"Cause: {device.cause_anomalie or '-'}",f"Note: {device.note or '-'}"]
         hist = session.query(TicketHistory).filter(TicketHistory.device_id==device.device_id).order_by(TicketHistory.first_seen.desc()).all()
         if hist:
@@ -698,11 +714,11 @@ class MainWindow(QMainWindow):
         jb = QPushButton("Jira Selezionati"); jb.setObjectName("jira"); jb.clicked.connect(self._jira_from_alerts); flt.addWidget(jb)
         jbl = QPushButton("Jira da Lista"); jbl.setObjectName("jira"); jbl.clicked.connect(self._jira_from_list); flt.addWidget(jbl)
         cb = QPushButton("Pulisci Filtri"); cb.setObjectName("secondary"); cb.clicked.connect(self._clear_alert_filters); flt.addWidget(cb); layout.addLayout(flt)
-        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","Mongo","Batt","Porta","Sotto C.","Onesait","Descrizione","Ticket"]
+        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","Mongo","Batt","Porta","Sotto C.","Onesait","Misure Mancanti","Descrizione","Ticket"]
         self.alert_table = FilterableTable(cols)
         self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,130); self.alert_table.table.setColumnWidth(2,100); self.alert_table.table.setColumnWidth(3,60); self.alert_table.table.setColumnWidth(4,55); self.alert_table.table.setColumnWidth(5,60)
         for i in range(6,9): self.alert_table.table.setColumnWidth(i,45)
-        self.alert_table.table.setColumnWidth(9,50); self.alert_table.table.setColumnWidth(10,80); self.alert_table.table.setColumnWidth(11,280)
+        self.alert_table.table.setColumnWidth(9,50); self.alert_table.table.setColumnWidth(10,80); self.alert_table.table.setColumnWidth(11,220); self.alert_table.table.setColumnWidth(12,260)
         self.alert_table.table.doubleClicked.connect(self._on_alert_dblclick); layout.addWidget(self.alert_table); return tab
 
     def _toggle_alert_nt(self):
@@ -1002,7 +1018,9 @@ class MainWindow(QMainWindow):
                         best[did] = (event, device)
             data = []
             for event, device in best.values():
-                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
+                metrics = device.misure_mancanti or ""
+                metrics_short = metrics if len(metrics) <= 60 else metrics[:57] + "..."
+                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Misure Mancanti":metrics_short,"_metrics_full":metrics,"Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
@@ -1011,6 +1029,12 @@ class MainWindow(QMainWindow):
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Onesait" and val != "-": return colored_item(val, "#FFF3E0", "#E65100")
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
+                elif col == "Misure Mancanti":
+                    it = QTableWidgetItem(val)
+                    full = row.get("_metrics_full", "")
+                    if full:
+                        it.setToolTip(full); it.setForeground(QColor("#E65100")); it.setBackground(QColor("#FFF8E1"))
+                    return it
                 elif col == "Ticket" and val != "-": return colored_item(val, "#FFEBEE", "#C62828")
                 return QTableWidgetItem(str(val))
             self.alert_table.set_data(data, ra); self.alert_count_label.setText(f"{len(data)} alert")

@@ -55,6 +55,7 @@ class Device(Base):
     last_avail_status = Column(String)
     last_avail_norm = Column(String)
     last_avail_date = Column(Date)
+    last_complete_date = Column(Date)
     days_in_current = Column(Integer, default=0)
     trend_7d = Column(String, default="")
     current_health = Column(String, default="UNKNOWN")
@@ -150,6 +151,19 @@ class ImportLog(Base):
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
+    _ensure_columns()
+
+
+def _ensure_columns():
+    """Aggiunge colonne mancanti a DB esistenti (micro-migration)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    existing = {c["name"] for c in insp.get_columns("devices")}
+    needed = [("last_complete_date", "DATE")]
+    with engine.begin() as conn:
+        for col, typ in needed:
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE devices ADD COLUMN {col} {typ}"))
 
 def get_session():
     return SessionLocal()
