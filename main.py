@@ -153,6 +153,22 @@ class ImportThread(QThread):
             self.progress.emit("Alert..."); ac = run_detection(); self.finished.emit(stats, ac)
         except Exception as e: self.error.emit(str(e))
 
+class JiraDownloadThread(QThread):
+    progress = pyqtSignal(str)
+    finished_ok = pyqtSignal(bool, str)
+    def run(self):
+        def cb(stage, cur, total):
+            if stage == "fetch":
+                self.progress.emit(f"Jira: scaricando ticket... ({cur})")
+            elif stage == "save":
+                if total: self.progress.emit(f"Jira: salvataggio {cur}/{total}")
+                else: self.progress.emit(f"Jira: salvataggio {cur}")
+        try:
+            ok, msg = download_from_jira(progress_cb=cb)
+            self.finished_ok.emit(ok, msg)
+        except Exception as e:
+            self.finished_ok.emit(False, f"Errore: {e}")
+
 class MaintenanceCheckThread(QThread):
     progress = pyqtSignal(int, int)  # done, total
     finished_ok = pyqtSignal(dict)   # {device_id: status}
@@ -770,13 +786,7 @@ class MainWindow(QMainWindow):
             if email and token:
                 reply = QMessageBox.question(self, "Aggiornamento Jira", "Vuoi aggiornare i ticket Jira?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
                 if reply == QMessageBox.Yes:
-                    self.status_label.setText("Download ticket Jira in corso...")
-                    ok, msg = download_from_jira(email=email, token=token)
-                    if ok:
-                        self.status_label.setText(f"Jira: {msg}")
-                        self._populate_tkt_filters()
-                    else:
-                        self.status_label.setText(f"Jira: {msg}")
+                    self._refresh_jira_api()
                 else:
                     self.status_label.setText("Aggiornamento Jira saltato")
             else:
@@ -810,7 +820,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(sep2)
         for c in [self.card_jira_totale,self.card_jira_week]: cl.addWidget(c)
         ml.addLayout(cl)
-        self.tabs = QTabWidget(); self.tabs.addTab(self._create_alerts_tab(), "\u26a0 Alert"); self.tabs.addTab(self._create_devices_tab(), "\U0001f4cb Dispositivi"); self.tabs.addTab(self._create_overview_tab(), "\U0001f4ca Overview"); self.tabs.addTab(self._create_ticket_tab(), "\U0001f3ab Ticket")
+        self.tabs = QTabWidget(); self.tabs.addTab(self._create_alerts_tab(), "\u26a0 Alert"); self.tabs.addTab(self._create_devices_tab(), "\U0001f4cb Dispositivi"); self.tabs.addTab(self._create_overview_tab(), "\U0001f4ca Overview"); self.tabs.addTab(self._create_ticket_tab(), "\U0001f3ab Ticket"); self.tabs.addTab(self._create_delta_tab(), "\u0394 Delta Ticket")
         self.tabs.currentChanged.connect(self._on_tab_changed); ml.addWidget(self.tabs)
         self.status_bar = QStatusBar(); self.setStatusBar(self.status_bar); self.status_label = QLabel("Pronto"); self.status_bar.addWidget(self.status_label, stretch=1)
 
@@ -1057,16 +1067,94 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tkt_table)
         return tab
 
+    def _create_delta_tab(self):
+        tab = QWidget(); layout = QVBoxLayout(tab)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("<b style='color:#0066CC;font-size:14px'>Delta Ticket: confronto Excel vs Jira</b>"))
+        top.addStretch()
+        rb = QPushButton("Aggiorna"); rb.setObjectName("jira"); rb.clicked.connect(self.refresh_delta); top.addWidget(rb)
+        cpb = QPushButton("Pulisci"); cpb.setObjectName("secondary"); cpb.setMaximumWidth(80); cpb.clicked.connect(lambda: self.delta_table.clear_filters()); top.addWidget(cpb)
+        self.delta_count_label = QLabel(""); self.delta_count_label.setStyleSheet("color:#666;font-weight:bold;margin-left:8px;"); top.addWidget(self.delta_count_label)
+        layout.addLayout(top)
+        cols = ["DeviceID","Ticket","Tipo Malf. (Excel)","Tipo Malf. (Jira)","Stato (Excel)","Stato (Jira)","Livello (Jira)","Data Apertura (Excel)","Data Risoluzione (Excel)","Data Apertura L4 (Excel)","Data Apertura (Jira)","Chiusura (Jira)","Aggiornato (Jira)"]
+        self.delta_table = FilterableTable(cols, dynamic_cols=[0,1])
+        for i, w in enumerate([170,90,160,160,90,110,80,110,110,110,110,110,110]):
+            self.delta_table.table.setColumnWidth(i, w)
+        self.delta_table.table.cellClicked.connect(lambda r, c: self._on_ticket_click(self.delta_table.table, r, c))
+        layout.addWidget(self.delta_table)
+        return tab
+
+    def refresh_delta(self):
+        session = get_session()
+        try:
+            jira_map = {}
+            try:
+                for t in get_ticket_data():
+                    if t.get("key"): jira_map[t["key"]] = t
+            except Exception: pass
+            rows = []
+            devs = session.query(Device).filter(Device.ticket_id.isnot(None), Device.ticket_id != "").all()
+            for d in devs:
+                jt = jira_map.get(d.ticket_id, {})
+                created = jt.get("created"); updated = jt.get("updated"); status = jt.get("status","") or ""
+                created_str = created.strftime("%Y-%m-%d") if created else ""
+                updated_str = updated.strftime("%Y-%m-%d") if updated else ""
+                closed_str = updated.strftime("%Y-%m-%d") if (updated and status in ("Chiusa","Discarded")) else ""
+                rows.append({
+                    "DeviceID": d.device_id,
+                    "_full_did": d.device_id,
+                    "Ticket": d.ticket_id or "-",
+                    "Tipo Malf. (Excel)": d.tipo_malfunzionamento or "-",
+                    "Tipo Malf. (Jira)": jt.get("effetto","") or "-",
+                    "Stato (Excel)": d.ticket_stato or "-",
+                    "Stato (Jira)": status or "-",
+                    "Livello (Jira)": jt.get("assignee_level","") or "-",
+                    "Data Apertura (Excel)": str(d.ticket_data_apertura) if d.ticket_data_apertura else "-",
+                    "Data Risoluzione (Excel)": str(d.ticket_data_risoluzione) if d.ticket_data_risoluzione else "-",
+                    "Data Apertura L4 (Excel)": str(d.ticket_data_apertura_l4) if d.ticket_data_apertura_l4 else "-",
+                    "Data Apertura (Jira)": created_str or "-",
+                    "Chiusura (Jira)": closed_str or "-",
+                    "Aggiornato (Jira)": updated_str or "-",
+                })
+        finally: session.close()
+        def render_delta(row, col):
+            val = row.get(col, "")
+            if col == "DeviceID":
+                it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
+            if col == "Ticket" and val and val != "-":
+                it = QTableWidgetItem(val); it.setForeground(QColor("#0052CC"))
+                f = it.font(); f.setBold(True); f.setUnderline(True); it.setFont(f)
+                key = _extract_jira_key(val)
+                if key: it.setToolTip(f"Apri {JIRA_BASE_URL}/browse/{key}")
+                return it
+            if col in ("Stato (Excel)","Stato (Jira)"): return ticket_stato_item(val)
+            if col.startswith("Tipo Malf."):
+                excel = row.get("Tipo Malf. (Excel)","") or ""; jira = row.get("Tipo Malf. (Jira)","") or ""
+                mismatch = excel != "-" and jira != "-" and excel.strip().lower() != jira.strip().lower()
+                if mismatch: return colored_item(val, "#FFF3E0", "#E65100")
+            if col in ("Data Apertura (Excel)","Data Apertura (Jira)"):
+                e = row.get("Data Apertura (Excel)","-"); j = row.get("Data Apertura (Jira)","-")
+                if e != "-" and j != "-" and e != j: return colored_item(val, "#FFF3E0", "#E65100")
+            return QTableWidgetItem(str(val))
+        self.delta_table.set_data(rows, render_delta)
+        self.delta_count_label.setText(f"{len(rows)} righe")
+
     def _refresh_jira_api(self):
-        """Aggiorna ticket da Jira API."""
-        self.status_label.setText("Download ticket da Jira API...")
-        self.tkt_refresh_btn.setEnabled(False)
-        ok, msg = download_from_jira()
-        self.tkt_refresh_btn.setEnabled(True)
+        """Aggiorna ticket da Jira API in background."""
+        if getattr(self, "_jira_thread", None) and self._jira_thread.isRunning():
+            QMessageBox.information(self, "Jira", "Aggiornamento già in corso..."); return
+        self.status_label.setText("Jira: avvio download in background...")
+        self.tkt_refresh_btn.setEnabled(False); self.tkt_refresh_btn.setText("Aggiornamento...")
+        self._jira_thread = JiraDownloadThread()
+        self._jira_thread.progress.connect(lambda s: self.status_label.setText(s))
+        self._jira_thread.finished_ok.connect(self._on_jira_download_done)
+        self._jira_thread.start()
+
+    def _on_jira_download_done(self, ok, msg):
+        self.tkt_refresh_btn.setEnabled(True); self.tkt_refresh_btn.setText("Aggiorna da Jira")
         self.status_label.setText(msg)
         if ok:
             self._populate_tkt_filters(); self.refresh_tickets(); self._refresh_jira_cards()
-            QMessageBox.information(self, "Jira", msg)
         else:
             QMessageBox.warning(self, "Jira", f"{msg}\n\nPer configurare le credenziali, crea un file .env\nnella cartella del tool con:\n\nJIRA_EMAIL=tua.email@reply.it\nJIRA_API_TOKEN=il_tuo_token")
 
@@ -1425,18 +1513,14 @@ class MainWindow(QMainWindow):
         """Auto-refresh ticket Jira ogni ora, con conferma utente."""
         reply = QMessageBox.question(self, "Aggiornamento Jira", "Vuoi aggiornare i ticket Jira?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if reply != QMessageBox.Yes: return
-        ok, msg = download_from_jira()
-        if ok:
-            self.status_label.setText(f"Jira aggiornato: {msg}")
-            self._refresh_jira_cards()
-            if self.tabs.currentIndex() == 3:
-                self._populate_tkt_filters(); self.refresh_tickets()
+        self._refresh_jira_api()
 
     def _on_tab_changed(self, idx):
         if idx==0: self.refresh_alerts()
         elif idx==1: self.refresh_devices()
         elif idx==2: self.refresh_overview()
         elif idx==3: self._populate_tkt_filters(); self.refresh_tickets()
+        elif idx==4: self.refresh_delta()
 
     def do_import(self):
         fp, _ = QFileDialog.getOpenFileName(self, "Seleziona File Excel", "", "Excel (*.xlsx *.xls);;All (*)"); 

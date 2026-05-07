@@ -209,6 +209,7 @@ class ExcelImporter:
             device.ticket_stato = safe_str(row.get("Stato Ticket"))
             device.ticket_data_apertura = safe_date(row.get("Data apertura ticket"))
             device.ticket_data_risoluzione = safe_date(row.get("Data risoluzione"))
+            device.ticket_data_apertura_l4 = safe_date(row.get("Data apertura ticket L4"))
             for col in df_stato.columns:
                 if 'Unnamed: 68' in str(col) or col == df_stato.columns[-1]:
                     device.misure_mancanti = safe_str(row.get(col)); break

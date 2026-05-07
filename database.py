@@ -78,6 +78,7 @@ class Device(Base):
     ticket_stato = Column(String)
     ticket_data_apertura = Column(Date)
     ticket_data_risoluzione = Column(Date)
+    ticket_data_apertura_l4 = Column(Date)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     availability = relationship("AvailabilityDaily", back_populates="device", cascade="all, delete-orphan")
     events = relationship("AnomalyEvent", back_populates="device", cascade="all, delete-orphan")
@@ -159,7 +160,7 @@ def _ensure_columns():
     from sqlalchemy import inspect, text
     insp = inspect(engine)
     existing = {c["name"] for c in insp.get_columns("devices")}
-    needed = [("last_complete_date", "DATE")]
+    needed = [("last_complete_date", "DATE"), ("ticket_data_apertura_l4", "DATE")]
     with engine.begin() as conn:
         for col, typ in needed:
             if col not in existing:

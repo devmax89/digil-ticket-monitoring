@@ -324,21 +324,22 @@ class _JiraIssue:
         self.fields = _AttrDict(data.get("fields", {}))
 
 
-def _search_issues_v3(jira_url, email, token, jql):
+def _search_issues_v3(jira_url, email, token, jql, progress_cb=None):
     """Esegue la ricerca ticket via REST API v3 (/rest/api/3/search/jql).
     Gestisce la paginazione e ritorna una lista di _JiraIssue."""
     url = f"{jira_url.rstrip('/')}/rest/api/3/search/jql"
     auth = (email, token)
     all_issues = []
-    start_at = 0
+    next_token = None
     max_results = 100
     while True:
         params = {
             "jql": jql,
-            "startAt": start_at,
             "maxResults": max_results,
             "fields": "*all",
         }
+        if next_token:
+            params["nextPageToken"] = next_token
         resp = requests.get(url, params=params, auth=auth)
         if resp.status_code == 410:
             raise JiraError(
@@ -354,9 +355,12 @@ def _search_issues_v3(jira_url, email, token, jql):
         issues = data.get("issues", [])
         for issue_data in issues:
             all_issues.append(_JiraIssue(issue_data))
-        total = data.get("total", 0)
-        start_at += len(issues)
-        if start_at >= total or not issues:
+        next_token = data.get("nextPageToken")
+        is_last = data.get("isLast", False)
+        if progress_cb:
+            try: progress_cb("fetch", len(all_issues), None)
+            except Exception: pass
+        if not issues or is_last or not next_token:
             break
     return all_issues
 
@@ -404,7 +408,7 @@ def _get_comments_v3(jira_url, email, token, issue_key):
 # ============================================================
 # DOWNLOAD DA JIRA API
 # ============================================================
-def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlassian.net", project="IA20"):
+def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlassian.net", project="IA20", progress_cb=None):
     """Scarica tutti i ticket Bug in esercizio da Jira e li salva nel DB."""
     if requests is None:
         return False, "Libreria 'requests' non installata. Esegui: pip install requests"
@@ -429,16 +433,23 @@ def download_from_jira(email=None, token=None, jira_url="https://terna-it.atlass
     custom_field_map = _discover_custom_fields(jira_url, email, token)
 
     jql = f'project = {project} AND type = "Bug in esercizio" ORDER BY created DESC'
+    if progress_cb:
+        try: progress_cb("fetch", 0, None)
+        except Exception: pass
     try:
-        issues = _search_issues_v3(jira_url, email, token, jql)
+        issues = _search_issues_v3(jira_url, email, token, jql, progress_cb=progress_cb)
     except JiraError as e:
         return False, f"Query fallita: {e}"
 
     init_jira_db()
     session = SessionLocal()
     count = 0
+    total = len(issues)
     try:
         for issue in issues:
+            if progress_cb and (count % 10 == 0 or count == total - 1):
+                try: progress_cb("save", count, total)
+                except Exception: pass
             f = issue.fields
             key = issue.key
             summary = f.summary or ""
