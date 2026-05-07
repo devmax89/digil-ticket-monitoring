@@ -12,9 +12,10 @@ from PyQt5.QtWidgets import (
     QGroupBox, QFileDialog, QMessageBox, QTabWidget, QHeaderView,
     QAbstractItemView, QStatusBar, QFrame, QLineEdit, QComboBox,
     QDialog, QTextEdit, QPlainTextEdit, QScrollArea, QSplitter, QSizePolicy,
-    QFormLayout, QDateEdit, QDialogButtonBox, QCheckBox
+    QFormLayout, QDateEdit, QDialogButtonBox, QCheckBox, QProgressDialog, QGridLayout
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDate, QTimer
+import threading as _maint_threading
 from PyQt5.QtGui import QColor, QFont, QBrush, QPixmap
 from database import get_session, init_db, Device, AvailabilityDaily, AnomalyEvent, ImportLog, TicketHistory
 from importer import run_import
@@ -22,6 +23,9 @@ from detection import run_detection
 from jira_client import (init_jira_db, import_from_excel as jira_import_excel, download_from_jira,
     get_ticket_data, get_filter_options, get_ticket_overview_by_fornitore, compute_timing_hours,
     FORNITORE_DISPLAY, HAS_JIRA, get_jira_stats, _load_credentials)
+from maintenance_api import (fetch_maintenance_bulk, get_token_manager as get_maint_tm,
+    load_cache as load_maint_cache, save_cache as save_maint_cache, cache_last_updated as maint_cache_ts,
+    device_name_to_clientid)
 
 JIRA_USERS = {
     "Festa Rosa": "60705508126db9006f3be9e8",
@@ -105,6 +109,15 @@ def check_item(val):
     elif val == "KO": return colored_item("KO", "#FFEBEE", "#C62828", True)
     return colored_item(val or "-", "#F5F5F5", "#757575")
 
+def maint_item(val):
+    """Formatta cella maintenance: ON=rosso, OFF=verde, NULL=giallo, ERR/SKIP=grigio."""
+    v = (val or "-").upper()
+    if v == "ON":   return colored_item("ON",   "#FFEBEE", "#C62828", True)
+    if v == "OFF":  return colored_item("OFF",  "#E8F5E9", "#2E7D32", True)
+    if v == "NULL": return colored_item("NULL", "#FFF8E1", "#9C6500", True)
+    if v == "ERR":  return colored_item("ERR",  "#F5F5F5", "#757575", True)
+    return colored_item("-", "#F5F5F5", "#757575")
+
 def trend_str(t):
     if not t: return "-"
     return "".join("\u25a0" if c == "O" else "\u25a1" for c in t)
@@ -122,9 +135,26 @@ class ImportThread(QThread):
             self.progress.emit("Alert..."); ac = run_detection(); self.finished.emit(stats, ac)
         except Exception as e: self.error.emit(str(e))
 
+class MaintenanceCheckThread(QThread):
+    progress = pyqtSignal(int, int)  # done, total
+    finished_ok = pyqtSignal(dict)   # {device_id: status}
+    error = pyqtSignal(str)
+    def __init__(self, device_ids):
+        super().__init__(); self.device_ids = device_ids; self.stop_flag = _maint_threading.Event()
+    def stop(self): self.stop_flag.set()
+    def run(self):
+        try:
+            res = fetch_maintenance_bulk(self.device_ids,
+                                          progress_cb=lambda d, t: self.progress.emit(d, t),
+                                          stop_flag=self.stop_flag)
+            self.finished_ok.emit(res)
+        except Exception as e:
+            self.error.emit(str(e))
+
 class FilterableTable(QWidget):
-    def __init__(self, columns, parent=None):
+    def __init__(self, columns, parent=None, dynamic_cols=None):
         super().__init__(parent); self.columns = columns; self._all = []; self._filt = []; self._rfn = None
+        self._dynamic_cols = list(dynamic_cols) if dynamic_cols else []
         lo = QVBoxLayout(self); lo.setContentsMargins(0,0,0,0); lo.setSpacing(2)
         fw = QWidget(); fl = QHBoxLayout(fw); fl.setContentsMargins(2,2,2,2); fl.setSpacing(2)
         self.filters = {}
@@ -150,9 +180,102 @@ class FilterableTable(QWidget):
                 it = self._rfn(rd, cn) if self._rfn else QTableWidgetItem(str(rd.get(cn,"")))
                 if it: self.table.setItem(ri, ci, it)
         self.table.setSortingEnabled(True)
+        # Auto-resize colonne dinamiche al contenuto
+        for ci in self._dynamic_cols:
+            if 0 <= ci < len(self.columns):
+                self.table.resizeColumnToContents(ci)
     def get_selected_rows_data(self):
         rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
         return [self._filt[r] for r in rows if r < len(self._filt)]
+
+
+class AvailabilityCalendar(QWidget):
+    """Vista calendario per Availability daily. Mostra un mese alla volta con frecce di navigazione.
+    Le celle dei giorni sono colorate in base allo stato di availability."""
+    IT_MONTHS = ["gennaio","febbraio","marzo","aprile","maggio","giugno",
+                 "luglio","agosto","settembre","ottobre","novembre","dicembre"]
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self._map = {}
+        for d, s in entries:
+            if isinstance(d, datetime): d = d.date()
+            elif isinstance(d, str):
+                try: d = datetime.fromisoformat(d).date()
+                except Exception: continue
+            if isinstance(d, date):
+                self._map[d] = s
+        if self._map:
+            ds = sorted(self._map.keys())
+            self._min_month = (ds[0].year, ds[0].month)
+            self._max_month = (ds[-1].year, ds[-1].month)
+            self._cur = self._max_month
+        else:
+            t = date.today()
+            self._min_month = self._max_month = self._cur = (t.year, t.month)
+        self._build_ui(); self._render()
+
+    def _build_ui(self):
+        lo = QVBoxLayout(self); lo.setContentsMargins(4,4,4,4); lo.setSpacing(4)
+        hdr = QHBoxLayout()
+        self.prev_btn = QPushButton("◀"); self.prev_btn.setObjectName("secondary"); self.prev_btn.setFixedSize(32,26); self.prev_btn.clicked.connect(self._prev_month)
+        self.next_btn = QPushButton("▶"); self.next_btn.setObjectName("secondary"); self.next_btn.setFixedSize(32,26); self.next_btn.clicked.connect(self._next_month)
+        self.lbl = QLabel(""); self.lbl.setAlignment(Qt.AlignCenter); self.lbl.setStyleSheet("font-weight:bold;font-size:14px;color:#0066CC;")
+        hdr.addWidget(self.prev_btn); hdr.addWidget(self.lbl, stretch=1); hdr.addWidget(self.next_btn)
+        lo.addLayout(hdr)
+        self.grid = QGridLayout(); self.grid.setSpacing(3); self.grid.setContentsMargins(0,0,0,0)
+        for ci, dn in enumerate(["L","M","M","G","V","S","D"]):
+            h = QLabel(dn); h.setAlignment(Qt.AlignCenter); h.setStyleSheet("font-weight:bold;color:#666;font-size:11px;padding:2px 0;")
+            self.grid.addWidget(h, 0, ci)
+        gw = QWidget(); gw.setLayout(self.grid); lo.addWidget(gw)
+        # Legenda
+        leg = QHBoxLayout(); leg.setSpacing(4)
+        for lbl, clr in [("Disp. Completa","#2E7D32"),("Buona Disp.","#66BB6A"),("Disp. Limitata","#F9A825"),("No Data","#C62828")]:
+            sq = QLabel(""); sq.setFixedSize(10,10); sq.setStyleSheet(f"background:{clr};border-radius:1px;"); leg.addWidget(sq); leg.addWidget(QLabel(f"<small>{lbl}</small>")); leg.addSpacing(6)
+        leg.addStretch(); lo.addLayout(leg)
+
+    def _set_month(self, y, m): self._cur = (y, m); self._render()
+
+    def _prev_month(self):
+        y, m = self._cur
+        if m == 1: y, m = y-1, 12
+        else: m -= 1
+        self._set_month(y, m)
+
+    def _next_month(self):
+        y, m = self._cur
+        if m == 12: y, m = y+1, 1
+        else: m += 1
+        self._set_month(y, m)
+
+    def _render(self):
+        import calendar
+        y, m = self._cur
+        self.lbl.setText(f"{self.IT_MONTHS[m-1]} {y}")
+        self.prev_btn.setEnabled(self._cur > self._min_month)
+        self.next_btn.setEnabled(self._cur < self._max_month)
+        # Pulisci righe giorni (1..6)
+        for r in range(1, 7):
+            for c in range(7):
+                it = self.grid.itemAtPosition(r, c)
+                if it:
+                    w = it.widget()
+                    if w:
+                        self.grid.removeWidget(w); w.deleteLater()
+        cal = calendar.monthcalendar(y, m)
+        for ri, week in enumerate(cal, start=1):
+            for ci, day in enumerate(week):
+                if day == 0: continue
+                d = date(y, m, day)
+                status = self._map.get(d)
+                cell = QLabel(str(day)); cell.setAlignment(Qt.AlignCenter); cell.setFixedSize(46, 34)
+                if status:
+                    color = avail_color(status)
+                    cell.setStyleSheet(f"background:{color};color:white;font-weight:bold;border-radius:5px;font-size:13px;")
+                    cell.setToolTip(f"{d.strftime('%d/%m/%Y')}: {status}")
+                else:
+                    cell.setStyleSheet("color:#BBB;font-size:13px;")
+                self.grid.addWidget(cell, ri, ci)
 
 
 class JiraFromListDialog(QDialog):
@@ -392,6 +515,7 @@ class DeviceDetailDialog(QDialog):
             if device.is_sotto_corona:
                 sc = QLabel("SOTTO CORONA"); sc.setStyleSheet("background:#E3F2FD;color:#1565C0;padding:4px 8px;border-radius:3px;font-weight:bold;"); top.addWidget(sc)
             top.addStretch()
+            self._fs_btn = QPushButton("⛶ Fullscreen"); self._fs_btn.setObjectName("secondary"); self._fs_btn.clicked.connect(self._toggle_fullscreen); top.addWidget(self._fs_btn)
             cpb = QPushButton("Copia Info"); cpb.setObjectName("secondary"); cpb.clicked.connect(lambda: self._copy_info(device, session)); top.addWidget(cpb)
             jb = QPushButton("Ticket Jira"); jb.setObjectName("jira"); jb.clicked.connect(lambda: self._open_jira(device)); top.addWidget(jb)
             layout.addLayout(top)
@@ -477,14 +601,9 @@ class DeviceDetailDialog(QDialog):
                 ht.resizeColumnsToContents(); gh = QGroupBox(f"Storico Ticket ({len(thist)})"); ghl = QVBoxLayout(); ghl.addWidget(ht); gh.setLayout(ghl); cl.addWidget(gh)
             avail = session.query(AvailabilityDaily).filter(AvailabilityDaily.device_id==device_id).order_by(AvailabilityDaily.check_date).all()
             if avail:
-                tll = QHBoxLayout()
-                for a in avail:
-                    bg = avail_color(a.raw_status)
-                    bx = QLabel(""); bx.setFixedSize(14,14); bx.setStyleSheet(f"background:{bg};border-radius:2px;"); bx.setToolTip(f"{a.check_date}: {a.raw_status}"); tll.addWidget(bx)
-                tll.addStretch(); leg = QHBoxLayout()
-                for lbl, clr in [("Disp. Completa","#2E7D32"),("Buona Disp.","#66BB6A"),("Disp. Limitata","#F9A825"),("No Data","#C62828")]:
-                    sq = QLabel(""); sq.setFixedSize(10,10); sq.setStyleSheet(f"background:{clr};border-radius:1px;"); leg.addWidget(sq); leg.addWidget(QLabel(f"<small>{lbl}</small>")); leg.addSpacing(8)
-                leg.addStretch(); tlo = QVBoxLayout(); tlo.addLayout(tll); tlo.addLayout(leg)
+                entries = [(a.check_date, a.raw_status) for a in avail]
+                cal = AvailabilityCalendar(entries)
+                tlo = QVBoxLayout(); tlo.addWidget(cal)
                 gtl = QGroupBox(f"Timeline Availability ({len(avail)} giorni)"); gtl.setLayout(tlo); cl.addWidget(gtl)
             events = session.query(AnomalyEvent).filter(AnomalyEvent.device_id==device_id).order_by(AnomalyEvent.created_at.desc()).limit(10).all()
             if events:
@@ -496,6 +615,19 @@ class DeviceDetailDialog(QDialog):
             cl.addStretch(); scroll.setWidget(content); layout.addWidget(scroll)
             cb = QPushButton("Chiudi"); cb.clicked.connect(self.close); layout.addWidget(cb, alignment=Qt.AlignRight)
         finally: session.close()
+
+    def _toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal(); self._fs_btn.setText("⛶ Fullscreen")
+        else:
+            self.showFullScreen(); self._fs_btn.setText("⛶ Esci Fullscreen")
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showNormal(); self._fs_btn.setText("⛶ Fullscreen"); return
+        if ev.key() == Qt.Key_F11:
+            self._toggle_fullscreen(); return
+        super().keyPressEvent(ev)
 
     def _copy_info(self, device, session):
         lines = [f"DeviceID: {device.device_id}",f"Fornitore: {device.fornitore}",f"Linea: {device.linea}",f"Sostegno: {device.st_sostegno}",f"DT: {device.dt}",f"Denominazione: {device.denominazione}",f"Regione: {device.regione} / {device.provincia}",f"IP: {device.ip_address}",f"Tipo: {device.sistema_digil}",f"Tipo Install: {device.tipo_install}",f"Sotto Corona: {'Si' if device.is_sotto_corona else 'No'}",f"Data Install: {device.data_install}","","--- Diagnostica ---",f"Mongo: {device.check_mongo}",f"Batteria: {device.batteria}",f"Porta: {device.porta_aperta}",f"Health: {device.current_health}",f"Ultimo Avail: {device.last_avail_status} ({device.last_avail_date})",f"Trend 7d: {trend_str(device.trend_7d)}",f"Giorni: {device.days_in_current}",f"Data Onesait: {device.data_onesait or '-'}",f"Data MongoDB: {device.data_mongo or '-'}"]
@@ -586,11 +718,16 @@ class TicketDetailDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.import_thread = None; self._alert_no_ticket = False; self._dev_no_ticket = False
+        # Carica cache maintenance da disco (così UI mostra subito ultimo stato noto)
+        self._maint_cache: Dict[str, str] = load_maint_cache()
+        self._maint_thread = None
         self.init_ui(); self.setStyleSheet(STYLE); init_db(); init_jira_db(); self.refresh_data()
         # Timer auto-refresh Jira ogni ora
         self.jira_timer = QTimer(self); self.jira_timer.timeout.connect(self._auto_refresh_jira); self.jira_timer.start(3600000)
         # Tentativo download Jira all'avvio (silenzioso)
         QTimer.singleShot(2000, self._startup_jira_download)
+        # Check maintenance API all'avvio: lazy, in background — UI mostra subito cache
+        QTimer.singleShot(3000, lambda: self.run_maintenance_check(at_boot=True))
 
     def _startup_jira_download(self):
         """Chiede conferma e tenta download ticket Jira all'avvio."""
@@ -713,12 +850,13 @@ class MainWindow(QMainWindow):
         flt.addStretch(); self.alert_count_label = QLabel(""); self.alert_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.alert_count_label)
         jb = QPushButton("Jira Selezionati"); jb.setObjectName("jira"); jb.clicked.connect(self._jira_from_alerts); flt.addWidget(jb)
         jbl = QPushButton("Jira da Lista"); jbl.setObjectName("jira"); jbl.clicked.connect(self._jira_from_list); flt.addWidget(jbl)
+        mb = QPushButton("Check Maint."); mb.setObjectName("secondary"); mb.clicked.connect(lambda: self.run_maintenance_check(at_boot=False)); flt.addWidget(mb)
         cb = QPushButton("Pulisci Filtri"); cb.setObjectName("secondary"); cb.clicked.connect(self._clear_alert_filters); flt.addWidget(cb); layout.addLayout(flt)
-        cols = ["Severity","Tipo","DeviceID","Fornitore","DT","Trend","Mongo","Batt","Porta","Sotto C.","Onesait","Misure Mancanti","Descrizione","Ticket"]
-        self.alert_table = FilterableTable(cols)
-        self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,130); self.alert_table.table.setColumnWidth(2,100); self.alert_table.table.setColumnWidth(3,60); self.alert_table.table.setColumnWidth(4,55); self.alert_table.table.setColumnWidth(5,60)
-        for i in range(6,9): self.alert_table.table.setColumnWidth(i,45)
-        self.alert_table.table.setColumnWidth(9,50); self.alert_table.table.setColumnWidth(10,80); self.alert_table.table.setColumnWidth(11,220); self.alert_table.table.setColumnWidth(12,260)
+        cols = ["Severity","Tipo","DeviceID","Meter","Fornitore","DT","Trend","Mongo","Batt","Porta","Maint.","Sotto C.","Onesait","Misure Mancanti","Descrizione","Ticket"]
+        self.alert_table = FilterableTable(cols, dynamic_cols=[2, 3, 6])
+        self.alert_table.table.setColumnWidth(0,75); self.alert_table.table.setColumnWidth(1,130); self.alert_table.table.setColumnWidth(4,60); self.alert_table.table.setColumnWidth(5,55); self.alert_table.table.setColumnWidth(6,60)
+        for i in range(7,11): self.alert_table.table.setColumnWidth(i,48)
+        self.alert_table.table.setColumnWidth(11,50); self.alert_table.table.setColumnWidth(12,80); self.alert_table.table.setColumnWidth(13,220); self.alert_table.table.setColumnWidth(14,260)
         self.alert_table.table.doubleClicked.connect(self._on_alert_dblclick); layout.addWidget(self.alert_table); return tab
 
     def _toggle_alert_nt(self):
@@ -755,12 +893,13 @@ class MainWindow(QMainWindow):
         flt.addStretch(); self.dev_count_label = QLabel(""); self.dev_count_label.setStyleSheet("color:#666;"); flt.addWidget(self.dev_count_label)
         jb2 = QPushButton("Jira Selezionati"); jb2.setObjectName("jira"); jb2.clicked.connect(self._jira_from_devices); flt.addWidget(jb2)
         jbl2 = QPushButton("Jira da Lista"); jbl2.setObjectName("jira"); jbl2.clicked.connect(self._jira_from_list); flt.addWidget(jbl2)
+        mb2 = QPushButton("Check Maint."); mb2.setObjectName("secondary"); mb2.clicked.connect(lambda: self.run_maintenance_check(at_boot=False)); flt.addWidget(mb2)
         cb2 = QPushButton("Pulisci Filtri"); cb2.setObjectName("secondary"); cb2.clicked.connect(self._clear_dev_filters); flt.addWidget(cb2); layout.addLayout(flt)
-        cols = ["DeviceID","Linea","Fornitore","Tipo","DT","Health","Mongo","Batt","Porta","Sotto C.","Trend","Giorni","Malf.","Ticket"]
-        self.dev_table = FilterableTable(cols)
-        self.dev_table.table.setColumnWidth(0,100); self.dev_table.table.setColumnWidth(1,70); self.dev_table.table.setColumnWidth(2,60); self.dev_table.table.setColumnWidth(3,48); self.dev_table.table.setColumnWidth(4,50)
-        for i in range(5,10): self.dev_table.table.setColumnWidth(i,48)
-        self.dev_table.table.setColumnWidth(10,60); self.dev_table.table.setColumnWidth(11,42)
+        cols = ["DeviceID","Meter","Linea","Fornitore","Tipo","DT","Health","Mongo","Batt","Porta","Maint.","Sotto C.","Trend","Giorni","Malf.","Ticket"]
+        self.dev_table = FilterableTable(cols, dynamic_cols=[0, 1, 12])
+        self.dev_table.table.setColumnWidth(2,70); self.dev_table.table.setColumnWidth(3,60); self.dev_table.table.setColumnWidth(4,48); self.dev_table.table.setColumnWidth(5,50)
+        for i in range(6,12): self.dev_table.table.setColumnWidth(i,48)
+        self.dev_table.table.setColumnWidth(12,60); self.dev_table.table.setColumnWidth(13,42)
         self.dev_table.table.doubleClicked.connect(self._on_dev_dblclick); layout.addWidget(self.dev_table); return tab
 
     def _toggle_dev_nt(self):
@@ -864,8 +1003,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(flt)
         # Tabella con Cluster-analisi
         cols = ["Ticket","DeviceID","Data Apertura","Stato","Livello","Tipo Malf.","Cluster-analisi","Risoluzione","Aggiornato","Chiusura","Timing"]
-        self.tkt_table = FilterableTable(cols)
-        self.tkt_table.table.setColumnWidth(0,80); self.tkt_table.table.setColumnWidth(1,200); self.tkt_table.table.setColumnWidth(2,90)
+        self.tkt_table = FilterableTable(cols, dynamic_cols=[1])
+        self.tkt_table.table.setColumnWidth(0,80); self.tkt_table.table.setColumnWidth(2,90)
         self.tkt_table.table.setColumnWidth(3,120); self.tkt_table.table.setColumnWidth(4,130); self.tkt_table.table.setColumnWidth(5,120)
         self.tkt_table.table.setColumnWidth(6,150); self.tkt_table.table.setColumnWidth(7,90); self.tkt_table.table.setColumnWidth(8,85); self.tkt_table.table.setColumnWidth(9,70)
         self.tkt_table.table.doubleClicked.connect(self._on_tkt_dblclick)
@@ -1020,12 +1159,13 @@ class MainWindow(QMainWindow):
             for event, device in best.values():
                 metrics = device.misure_mancanti or ""
                 metrics_short = metrics if len(metrics) <= 60 else metrics[:57] + "..."
-                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Misure Mancanti":metrics_short,"_metrics_full":metrics,"Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
+                data.append({"Severity":event.severity,"Tipo":(event.event_type or "").replace("_"," "),"DeviceID":device.device_id,"_full_did":device.device_id,"Meter":device_name_to_clientid(device.device_id),"Fornitore":device.fornitore or "-","DT":device.dt or "-","Trend":trend_str(device.trend_7d),"Mongo":device.check_mongo or "-","Batt":device.batteria or "-","Porta":device.porta_aperta or "-","Maint.":self._maint_cache.get(device.device_id, "-"),"Sotto C.":"SC" if device.is_sotto_corona else "","Onesait":str(device.data_onesait) if device.data_onesait and device.data_onesait.year >= 2020 else "-","Misure Mancanti":metrics_short,"_metrics_full":metrics,"Descrizione":event.description or "","Ticket":f"{device.ticket_id} ({device.ticket_stato})" if device.ticket_id else "-"})
             def ra(row, col):
                 val = row.get(col, "")
                 if col == "Severity": return colored_item(val, SEV_BG.get(val,""), SEV_COLORS.get(val,""), True)
                 elif col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col in ("Mongo","Batt","Porta"): return check_item(val)
+                elif col == "Maint.": return maint_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Onesait" and val != "-": return colored_item(val, "#FFF3E0", "#E65100")
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
@@ -1060,12 +1200,13 @@ class MainWindow(QMainWindow):
             data = []
             for d in q.all():
                 sd = d.sistema_digil or ""; ts = "M" if "master" in sd else "S" if "slave" in sd else "?"
-                data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
+                data.append({"DeviceID":d.device_id,"_full_did":d.device_id,"Meter":device_name_to_clientid(d.device_id),"Linea":d.linea or "-","Fornitore":d.fornitore or "-","Tipo":ts,"DT":d.dt or "-","Health":d.current_health or "-","Mongo":d.check_mongo or "-","Batt":d.batteria or "-","Porta":d.porta_aperta or "-","Maint.":self._maint_cache.get(d.device_id, "-"),"Sotto C.":"SC" if d.is_sotto_corona else "","Trend":trend_str(d.trend_7d),"Giorni":str(d.days_in_current) if d.days_in_current else "-","Malf.":d.tipo_malfunzionamento or "-","Ticket":d.ticket_id or "-"})
             def rd(row, col):
                 val = row.get(col, "")
                 if col == "DeviceID": it = QTableWidgetItem(val); it.setData(Qt.UserRole, row.get("_full_did")); it.setToolTip(row.get("_full_did", val)); it.setForeground(QColor("#0066CC")); f = it.font(); f.setBold(True); it.setFont(f); return it
                 elif col == "Health": return colored_item(val, HEALTH_BG.get(val,""), bold=True)
                 elif col in ("Mongo","Batt","Porta"): return check_item(val)
+                elif col == "Maint.": return maint_item(val)
                 elif col == "Sotto C." and val == "SC": return colored_item("SC","#E3F2FD","#1565C0",True)
                 elif col == "Trend": it = QTableWidgetItem(val); it.setFont(QFont("Consolas",10)); return it
                 elif col == "Ticket" and val != "-": return colored_item(val, "#FFEBEE", "#C62828")
@@ -1130,6 +1271,97 @@ class MainWindow(QMainWindow):
                 [js["week_aperti"], js["week_chiusi"], js["week_scartati"]])
         except Exception:
             pass
+
+    def run_maintenance_check(self, at_boot: bool = False, force: bool = False):
+        """Lancia check API maintenance con progress dialog modale.
+        Skippa se cache aggiornata < 8 ore fa (a meno di force=True).
+        Cache su disco viene aggiornata a fine fetch (sovrascrive eventuali cambi)."""
+        # Evita doppio lancio concorrente
+        if self._maint_thread is not None and self._maint_thread.isRunning():
+            if not at_boot:
+                QMessageBox.information(self, "Maintenance", "Check già in corso.")
+            return
+        # Skip se cache fresca (< TTL ore, configurabile via .env)
+        import os as _os
+        try: MAINT_TTL_HOURS = float(_os.getenv("MAINT_TTL_HOURS", "8"))
+        except Exception: MAINT_TTL_HOURS = 8.0
+        if not force:
+            ts = maint_cache_ts()
+            if ts:
+                try:
+                    last = datetime.fromisoformat(ts)
+                    age_h = (datetime.now() - last).total_seconds() / 3600
+                    if age_h < MAINT_TTL_HOURS:
+                        msg = f"Maintenance: cache recente ({age_h:.1f}h fa, soglia {MAINT_TTL_HOURS}h) — check skippato"
+                        self.status_label.setText(msg)
+                        if not at_boot:
+                            reply = QMessageBox.question(self, "Maintenance",
+                                f"Ultimo aggiornamento: {ts} ({age_h:.1f}h fa).\n"
+                                f"La cache è ancora fresca (< {MAINT_TTL_HOURS}h).\n\nForzare comunque il check?",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                            if reply == QMessageBox.Yes:
+                                return self.run_maintenance_check(at_boot=False, force=True)
+                        return
+                except Exception:
+                    pass
+        # Verifica config
+        tm = get_maint_tm()
+        if not tm.is_configured():
+            self.status_label.setText("Maintenance API: credenziali non configurate (.env)")
+            if not at_boot:
+                QMessageBox.warning(self, "Config mancante",
+                    "Configura AUTH_URL, CLIENT_ID, CLIENT_SECRET nel file .env")
+            return
+        # Lista device
+        session = get_session()
+        try:
+            ids = [r[0] for r in session.query(Device.device_id).all()]
+        finally:
+            session.close()
+        if not ids:
+            if not at_boot:
+                QMessageBox.information(self, "Maintenance", "Nessun device nel DB.")
+            return
+        total = len(ids)
+        last_ts = maint_cache_ts() or "mai"
+        # Progress dialog modale
+        dlg = QProgressDialog(f"Check maintenance API in corso...\n0/{total} device\n(ultimo agg.: {last_ts})",
+                              "Annulla", 0, total, self)
+        dlg.setWindowTitle("Maintenance Check")
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        # Worker
+        thread = MaintenanceCheckThread(ids)
+        def on_progress(done, total):
+            dlg.setMaximum(total)
+            dlg.setValue(done)
+            dlg.setLabelText(f"Check maintenance API in corso...\n{done}/{total} device")
+        def on_finished(res):
+            self._maint_cache.update(res)
+            save_maint_cache(self._maint_cache)
+            dlg.setValue(dlg.maximum())
+            dlg.close()
+            on_c = sum(1 for v in res.values() if v == "ON")
+            off_c = sum(1 for v in res.values() if v == "OFF")
+            null_c = sum(1 for v in res.values() if v == "NULL")
+            err_c = sum(1 for v in res.values() if v == "ERR")
+            self.status_label.setText(f"Maintenance aggiornata: ON={on_c} OFF={off_c} NULL={null_c} ERR={err_c}")
+            self.refresh_alerts(); self.refresh_devices()
+            self._maint_thread = None
+        def on_error(msg):
+            dlg.close()
+            self.status_label.setText(f"Maintenance: errore {msg}")
+            QMessageBox.warning(self, "Maintenance", f"Errore durante il check:\n{msg}")
+            self._maint_thread = None
+        thread.progress.connect(on_progress)
+        thread.finished_ok.connect(on_finished)
+        thread.error.connect(on_error)
+        dlg.canceled.connect(thread.stop)
+        thread.start()
+        self._maint_thread = thread
 
     def _auto_refresh_jira(self):
         """Auto-refresh ticket Jira ogni ora, con conferma utente."""
